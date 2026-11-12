@@ -1,0 +1,94 @@
+# Compile l'app sur les serveurs de GitHub, la signe (si SignPath est configuré) et publie la release.
+# Déclenché par un tag "v1.2.3" (doit correspondre à la version de Cargo.toml).
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write       # créer la release
+  id-token: write       # attestation de provenance
+  attestations: write
+  actions: read         # SignPath lit l'artefact de la build
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      # La signature s'active toute seule quand le secret SIGNPATH_API_TOKEN existe.
+      SIGN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Vérifier que le tag correspond à Cargo.toml
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} != Cargo.toml v$v" }
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Build
+        env:
+          HMC_REPO: ${{ github.repository }}   # dépôt utilisé pour les mises à jour auto
+        run: cargo build --release --locked
+
+      - name: Préparer l'exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist, unsigned | Out-Null
+          Copy-Item target/release/horizon-mod-converter.exe unsigned/HorizonModConverter.exe
+
+      # ---- Signature de code (SignPath Foundation, gratuit pour l'open source) ----
+      - name: Envoyer l'exe non signé
+        if: env.SIGN == 'true'
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned
+          path: unsigned/HorizonModConverter.exe
+
+      - name: Signer avec SignPath
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Choisir l'exe final
+        shell: pwsh
+        run: |
+          if ("$env:SIGN" -eq "true") {
+            Copy-Item signed/HorizonModConverter.exe dist/HorizonModConverter.exe
+            $sig = Get-AuthenticodeSignature dist/HorizonModConverter.exe
+            if ($sig.Status -ne "Valid") { throw "Signature invalide : $($sig.Status)" }
+            Write-Host "Signé par : $($sig.SignerCertificate.Subject)"
+          } else {
+            Copy-Item unsigned/HorizonModConverter.exe dist/HorizonModConverter.exe
+            Write-Host "::warning::Exe NON signé (secret SIGNPATH_API_TOKEN absent)"
+          }
+          $h = (Get-FileHash dist/HorizonModConverter.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  HorizonModConverter.exe" | Out-File -Encoding ascii -NoNewline dist/HorizonModConverter.exe.sha256
+          Write-Host "SHA-256: $h"
+
+      - name: Attestation de provenance (prouve que l'exe vient de cette build GitHub)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/HorizonModConverter.exe
+
+      - name: Publier la release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/HorizonModConverter.exe
+            dist/HorizonModConverter.exe.sha256
+          generate_release_notes: true
