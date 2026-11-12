@@ -89,7 +89,7 @@ pub fn create_pack(name: &str, description: &str, mods: &[PathBuf], out: &Path) 
         z.start_file("LISEZ-MOI.txt", o).map_err(|e| e.to_string())?;
         z.write_all(
             format!(
-                "Modpack Horizon « {} » ({} mods).\r\n\r\nPour l'installer : ouvre Horizon Mod Converter et glisse ce fichier dans la fenêtre,\r\npuis clique sur « Installer ».\r\n\r\nÀ la main : copie les fichiers du dossier mods/ dans le dossier horizon-mods/ de ton jeu Horizon\r\n(le dossier qui contient options.txt), puis active-les dans Options > Mods.\r\n",
+                "Modpack Horizon « {} » ({} mods).\r\n\r\nPour l'installer : ouvre Oxyde et glisse ce fichier dans la fenêtre,\r\npuis clique sur « Installer ».\r\n\r\nÀ la main : copie les fichiers du dossier mods/ dans le dossier horizon-mods/ de ton jeu Horizon\r\n(le dossier qui contient options.txt), puis active-les dans Options > Mods.\r\n",
                 info.name,
                 info.mods.len()
             )

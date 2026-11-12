@@ -1,110 +1,154 @@
-# Oxyde
+<p align="center">
+  <img src="assets/icon.png" width="96" alt="Oxyde logo">
+</p>
 
-**Le magasin de mods, le convertisseur et le lanceur pour [Horizon](https://playhorizon.dev/)**,
-la version de Minecraft Java Edition 26.3 réécrite en Rust (Minecraft Rust Edition).
+<h1 align="center">Oxyde</h1>
 
-- Parcours les mods Horizon et les mods Java de Modrinth, installe-les en un clic.
-- Convertis tes mods **Java** (Fabric, Quilt, Forge, NeoForge) en mods Horizon.
-- Regroupe-les en **modpack** à partager avec tes amis.
-- Lance Horizon directement depuis l'app.
+<p align="center">
+  <b>Mod store, Java mod converter and launcher for <a href="https://playhorizon.dev/">Horizon</a></b><br>
+  Horizon is Minecraft: Java Edition 26.3 rewritten in Rust (Minecraft Rust Edition).<br>
+  Free · Open source (MIT) · One <code>.exe</code> · No install · by <b>full_money</b>
+</p>
 
-Gratuit, open source (MIT), un seul `.exe`, sans installation.
+<p align="center">
+  <a href="../../releases/latest"><b>⬇ Download Oxyde.exe</b></a>
+</p>
 
-## Télécharger
+![Home](docs/screenshots/home.png)
 
-👉 Va dans **[Releases](../../releases/latest)** et télécharge `HorizonModConverter.exe`.
+## Features
 
-L'app se met à jour toute seule : au démarrage elle regarde s'il y a une nouvelle version et te propose de l'installer en un clic.
+- **Play**: launches Horizon straight from Oxyde, through the official Horizon launcher.
+- **Store**: browse the 160+ projects of Horizon's official registry (content mods, native Rust mods,
+  resource packs, shaders) and install them in one click. Every file is checked against the registry
+  (size and SHA-256) before it reaches your game folder.
+- **Modrinth**: search Java mods on Modrinth. If Horizon already has an official version of the mod,
+  Oxyde installs that one (complete, code included). Otherwise it converts the mod's content.
+- **Converter**: drop your Java mods (`.jar`, Fabric / Quilt / Forge / NeoForge) or a whole `mods` folder.
+- **My mods**: turn mods on and off, remove them, see what is installed.
+- **Modpacks**: bundle your mods into a `.hzmods` file and send it to your friends. They drop it in Oxyde
+  and click Install.
+- **Auto-update**: Oxyde checks its GitHub releases at start-up and updates itself in one click,
+  after checking the SHA-256 of the new version.
 
-## Utilisation
-
-1. Lance `HorizonModConverter.exe`.
-2. **Glisse tes `.jar`** dans la fenêtre (ou un dossier `mods` entier).
-3. Clique sur **Convertir**.
-4. Clique sur **Installer dans Horizon** (choisis une fois le dossier de jeu Horizon, celui qui contient `options.txt`).
-   Les mods sont copiés dans `horizon-mods/` et activés.
-5. Plusieurs mods ? Clique sur **Créer le modpack** : tu obtiens un fichier `.hzmods`.
-   Envoie-le à tes amis : ils le glissent dans l'app et cliquent sur **Installer**.
-
-## Ce qui est converti (et ce qui ne l'est pas)
-
-Horizon **n'exécute pas le code Java** des mods ([doc officielle](https://playhorizon.dev/docs/mods)).
-L'app récupère donc tout ce qui n'est pas du code et en fait un mod de contenu Horizon (`.hmod`) :
-
-| Converti ✔ | Pas converti ✖ |
+| Store (Horizon) | Store (Modrinth) |
 |---|---|
-| Textures, modèles, sons, langues | Code Java (machines, interfaces, IA des mobs) |
-| Recettes, tags, tables de loot, avancements | Mixins, événements |
-| Structures, features et biome modifiers | Fichiers qui remplacent le vanilla |
-| Blocs et objets (déclarés avec un modèle vanilla deviné d'après leur nom) | |
+| ![Store](docs/screenshots/store.png) | ![Modrinth](docs/screenshots/modrinth.png) |
 
-Détails techniques :
+| My mods | Start-up |
+|---|---|
+| ![My mods](docs/screenshots/mods.png) | ![Splash](docs/screenshots/splash.png) |
 
-- manifeste `horizon-mod.toml` (API 0.2, capability `registries`, `side = "both"`) ;
-- anciens dossiers (`recipes/`, `loot_tables/`, `tags/blocks/`…) renommés au format 1.21+/26.3 ;
-- les fichiers hors des namespaces autorisés, les noms invalides et les fichiers > 16 Mio sont ignorés, avec la raison affichée ;
-- `assets/<id>/items/*.json` ajoutés quand ils manquent ;
-- blocs/objets : `data/<id>/horizon/block|item/*.json` avec un modèle vanilla (`_stairs` → escaliers, `_ore` → minerai, `_sword` → épée…). Décoche l'option dans **Réglages** pour ne pas les générer.
+## How to use
 
-Les mods de **décoration, minerais, nourriture, structures** marchent le mieux.
+1. Install [Horizon](https://playhorizon.dev/docs/install) and open its launcher once to sign in with your
+   Microsoft account (you need to own Minecraft: Java Edition).
+2. Download `Oxyde.exe` from [Releases](../../releases/latest) and run it.
+3. Go to **Store**, pick mods, click **Install**.
+4. Click **Play**.
 
-## Format du modpack `.hzmods`
+Oxyde finds Horizon by itself: the game folder is `%APPDATA%\horizon` (or `HORIZON_HOME`) and the launcher is
+`%LOCALAPPDATA%\Programs\Horizon Launcher\horizon-launcher.exe`. You can change the game folder in **Settings**.
 
-Un zip contenant `pack.json` (nom, version, liste des mods avec leur SHA-256) et `mods/<id>.hmod`.
-Le format officiel `.hpack` de Horizon télécharge les mods depuis son registre, il ne peut donc pas contenir des mods convertis localement.
-Tu peux aussi l'ouvrir comme un zip et copier `mods/*.hmod` dans `horizon-mods/` à la main.
+## What a converted Java mod can and cannot do
 
-## Sécurité
+Horizon is a new program written in Rust. It **cannot run the Java code** of Forge, NeoForge, Fabric or Quilt
+mods, and neither can any converter: that code patches Minecraft's Java classes, which Horizon does not have
+([Horizon docs](https://playhorizon.dev/docs/mods)). This is why Oxyde works in this order:
 
-- L'`.exe` est **compilé par GitHub Actions** à partir de ce code ([workflow](.github/workflows/release.yml)), pas sur un PC.
-- Chaque release publie le **SHA-256** de l'exe et une **attestation de provenance** GitHub.
-  Pour vérifier : `gh attestation verify HorizonModConverter.exe --repo <propriétaire>/<dépôt>`.
-- Pas de compresseur d'exe (UPX), pas d'installeur, pas de droits administrateur, pas de télémétrie.
-- La mise à jour auto ne télécharge que depuis les releases de ce dépôt et vérifie le SHA-256 avant de remplacer l'exe.
+1. **Official Horizon version first.** Many popular mods have been rewritten in Rust for Horizon
+   (AppleSkin, AE2, Zoom, minimaps…). Those are complete, code included, and Oxyde installs them from
+   Horizon's registry.
+2. **Otherwise, content conversion.** Oxyde keeps everything that is not code and builds a Horizon content mod
+   (`.hmod`):
 
-### Signature de code
+| Converted ✔ | Not converted ✖ |
+|---|---|
+| Textures, models, sounds, languages | Java code (machines, custom screens, mob AI, events) |
+| Recipes, tags, loot tables, advancements | Mixins |
+| Structures, features, biome modifiers | Files that replace vanilla ones |
+| Blocks and items (declared from a vanilla template guessed from the name) | |
 
-Les releases sont signées automatiquement via [SignPath Foundation](https://signpath.org/) (certificat gratuit pour
-l'open source) dès que le projet y est accepté. Tant qu'un exe n'est pas signé, Windows SmartScreen peut afficher
-« Windows a protégé votre ordinateur » : clique sur **Informations complémentaires → Exécuter quand même**.
+Decoration, ore, food and structure mods work best. Tech mods only keep their look and recipes.
+Mods that are code only (Sodium, Fabric API, Iris…) are marked "Java code only" in the store.
 
-Activer la signature (mainteneurs), une fois le projet accepté par SignPath :
+3. **Later: the Java bridge.** The Horizon team plans an optional Java bridge that will run unchanged
+   Fabric 26.3 jars ([plan](https://github.com/horizon-rust/horizon/issues/13914)). It is not released yet.
+   Oxyde will support it when it ships.
 
-1. Dans SignPath, crée le projet, une *signing policy* `release-signing` et un *trusted build system* « GitHub.com » lié au dépôt.
-2. Sur GitHub, **Settings → Secrets and variables → Actions** :
-   - secret `SIGNPATH_API_TOKEN` (token d'un utilisateur CI SignPath) ;
-   - variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_POLICY_SLUG`.
-3. La prochaine release est signée. Le workflow refuse de publier si la signature n'est pas valide.
+### Conversion details
+
+- writes `horizon-mod.toml` (API 0.2, capability `registries`, `side = "both"`);
+- renames pre-1.21 folders (`recipes/`, `loot_tables/`, `tags/blocks/`…) to the 26.3 names;
+- keeps files only in the mod's own namespaces, plus tag additions (`minecraft`, `c`) and vanilla atlases,
+  as Horizon requires; every skipped file is listed with the reason;
+- adds missing item model definitions (`assets/<id>/items/*.json`);
+- declares blocks and items in `data/<id>/horizon/{block,item}/` from a vanilla template
+  (`_stairs` → stairs, `_ore` → ore, `_sword` → sword…). This can be turned off in **Settings**.
+
+## The `.hzmods` modpack format
+
+A zip holding `pack.json` (name, version, list of mods with their SHA-256) and `mods/<id>.hmod`.
+Horizon's own `.hpack` format downloads its mods from the registry, so it cannot hold mods converted on your
+machine. You can also open a `.hzmods` as a zip and copy `mods/*.hmod` into the game's `horizon-mods/` folder.
+
+## Security
+
+- The `.exe` is **built by GitHub Actions** from this source code ([workflow](.github/workflows/release.yml)),
+  never on a personal computer.
+- Each release publishes the **SHA-256** of the exe and a GitHub **build provenance attestation**. To check it:
+  `gh attestation verify Oxyde.exe --repo 0full-money0/oxyde`
+- No exe packer (UPX), no installer, no admin rights, no telemetry.
+- Auto-update only downloads from this repository's releases and checks the SHA-256 before replacing the exe.
+- Store downloads only come from Horizon's registry (`github.com/.../releases/download/...`) and Modrinth's CDN,
+  and are checked by hash.
+
+Windows SmartScreen may show "Windows protected your PC" for a new unsigned exe: click
+**More info → Run anyway**. Releases will be signed as soon as the project is accepted by SignPath Foundation.
 
 ### Code signing policy
 
-Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
+[SignPath Foundation](https://signpath.org/).
 
 - Committers and reviewers: the members of this repository with write access.
-- Approvers: the repository owner.
+- Approvers: the repository owner (full_money).
 - Only binaries built by this repository's GitHub Actions workflow from its public source are signed.
-- Privacy: this program does not transfer any information to other networked systems unless specifically requested
-  by the user, except the update check, which reads this repository's latest GitHub release (no personal data is sent).
+- Privacy: this program does not transfer any information to other networked systems unless specifically
+  requested by the user. The only automatic requests are the update check (this repository's latest GitHub
+  release) and the Horizon registry index; Modrinth is contacted only when you open its tab. No personal data
+  is sent.
 
-## Ligne de commande
+Enabling signing (maintainers), once SignPath has accepted the project:
+
+1. In SignPath, create the project, a signing policy and a "GitHub.com" trusted build system linked to this repository.
+2. In GitHub, **Settings → Secrets and variables → Actions**: add the secret `SIGNPATH_API_TOKEN` and the variables
+   `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_POLICY_SLUG`.
+3. The next release is signed. The workflow refuses to publish if the signature is not valid.
+
+## Command line
 
 ```bash
-HorizonModConverter.exe --convert <dossier-sortie> mod1.jar mod2.jar
+Oxyde.exe --convert <output-folder> mod1.jar mod2.jar
+Oxyde.exe --install horizon <project-id> <game-folder>
+Oxyde.exe --install modrinth <slug> <game-folder>
 ```
 
-## Compiler soi-même
+## Build from source
 
 ```bash
 cargo build --release
 ```
 
-## Publier une nouvelle version (mainteneurs)
+## Releasing a new version (maintainers)
 
-1. Change `version` dans `Cargo.toml` (ex. `1.0.1`) et commit.
-2. `git tag v1.0.1 && git push origin main --tags`
-3. GitHub compile et publie la release. Les apps déjà installées proposent la mise à jour.
+1. Bump `version` in `Cargo.toml` (for example `1.1.1`) and commit.
+2. `git tag v1.1.1 && git push origin main --tags`
+3. GitHub builds and publishes the release. Installed copies offer the update on their next start.
 
-## Licence
+## Credits and license
 
-[MIT](LICENSE). Projet non officiel, sans lien avec Mojang, Microsoft ou l'équipe Horizon.
-Les mods convertis restent soumis à la licence de leurs auteurs : vérifie-la avant de partager un modpack.
+Made by **full_money**. Released under the [MIT License](LICENSE).
+
+Unofficial project, not affiliated with Mojang, Microsoft or the Horizon team. Converted mods remain under
+their authors' licenses: check them before sharing a modpack.

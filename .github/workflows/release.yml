@@ -41,7 +41,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist, unsigned | Out-Null
-          Copy-Item target/release/horizon-mod-converter.exe unsigned/HorizonModConverter.exe
+          Copy-Item target/release/oxyde.exe unsigned/Oxyde.exe
 
       # ---- Signature de code (SignPath Foundation, gratuit pour l'open source) ----
       - name: Envoyer l'exe non signé
@@ -50,7 +50,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: unsigned
-          path: unsigned/HorizonModConverter.exe
+          path: unsigned/Oxyde.exe
 
       - name: Signer avec SignPath
         if: env.SIGN == 'true'
@@ -68,27 +68,35 @@ jobs:
         shell: pwsh
         run: |
           if ("$env:SIGN" -eq "true") {
-            Copy-Item signed/HorizonModConverter.exe dist/HorizonModConverter.exe
-            $sig = Get-AuthenticodeSignature dist/HorizonModConverter.exe
+            Copy-Item signed/Oxyde.exe dist/Oxyde.exe
+            $sig = Get-AuthenticodeSignature dist/Oxyde.exe
             if ($sig.Status -ne "Valid") { throw "Signature invalide : $($sig.Status)" }
             Write-Host "Signé par : $($sig.SignerCertificate.Subject)"
           } else {
-            Copy-Item unsigned/HorizonModConverter.exe dist/HorizonModConverter.exe
+            Copy-Item unsigned/Oxyde.exe dist/Oxyde.exe
             Write-Host "::warning::Exe NON signé (secret SIGNPATH_API_TOKEN absent)"
           }
-          $h = (Get-FileHash dist/HorizonModConverter.exe -Algorithm SHA256).Hash.ToLower()
-          "$h  HorizonModConverter.exe" | Out-File -Encoding ascii -NoNewline dist/HorizonModConverter.exe.sha256
-          Write-Host "SHA-256: $h"
+          # Ancien nom, pour que la v1.0.0 (Horizon Mod Converter) se mette à jour toute seule.
+          Copy-Item dist/Oxyde.exe dist/HorizonModConverter.exe
+          foreach ($n in "Oxyde.exe", "HorizonModConverter.exe") {
+            $h = (Get-FileHash "dist/$n" -Algorithm SHA256).Hash.ToLower()
+            "$h  $n" | Out-File -Encoding ascii -NoNewline "dist/$n.sha256"
+            Write-Host "$n SHA-256: $h"
+          }
 
       - name: Attestation de provenance (prouve que l'exe vient de cette build GitHub)
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: dist/HorizonModConverter.exe
+          subject-path: |
+            dist/Oxyde.exe
+            dist/HorizonModConverter.exe
 
       - name: Publier la release
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/Oxyde.exe
+            dist/Oxyde.exe.sha256
             dist/HorizonModConverter.exe
             dist/HorizonModConverter.exe.sha256
           generate_release_notes: true

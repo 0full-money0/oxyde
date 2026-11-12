@@ -10,8 +10,8 @@ use std::io::Read;
 
 pub const REPO: Option<&str> = option_env!("HMC_REPO");
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const ASSET: &str = "HorizonModConverter.exe";
-const UA: &str = concat!("HorizonModConverter/", env!("CARGO_PKG_VERSION"));
+pub const ASSET: &str = "Oxyde.exe";
+const UA: &str = crate::net::UA;
 
 #[derive(Debug, Clone)]
 pub struct Release {
@@ -54,7 +54,7 @@ pub fn check() -> Result<Option<Release>, String> {
             .and_then(|a| a["browser_download_url"].as_str())
             .map(String::from)
     };
-    let exe_url = find(ASSET).ok_or("la release n'a pas de HorizonModConverter.exe")?;
+    let exe_url = find(ASSET).ok_or("la release n'a pas de Oxyde.exe")?;
     let sha_url = find(&format!("{ASSET}.sha256")).ok_or("la release n'a pas de fichier .sha256")?;
     if !trusted(&exe_url) || !trusted(&sha_url) {
         return Err("adresse de téléchargement non fiable".into());
@@ -86,7 +86,7 @@ pub fn apply(rel: &Release) -> Result<(), String> {
     if exe.len() < 2 || &exe[..2] != b"MZ" {
         return Err("le fichier téléchargé n'est pas un exécutable Windows".into());
     }
-    let tmp = std::env::temp_dir().join(format!("HorizonModConverter-{}.exe", rel.version));
+    let tmp = std::env::temp_dir().join(format!("Oxyde-{}.exe", rel.version));
     std::fs::write(&tmp, &exe).map_err(|e| e.to_string())?;
     self_replace::self_replace(&tmp).map_err(|e| format!("remplacement impossible : {e}"))?;
     let _ = std::fs::remove_file(&tmp);

@@ -4,11 +4,11 @@ fn main() {
     #[cfg(windows)]
     {
         let mut res = winresource::WindowsResource::new();
-        res.set("ProductName", "Horizon Mod Converter");
-        res.set("FileDescription", "Horizon Mod Converter");
-        res.set("CompanyName", "Horizon Mod Converter contributors");
-        res.set("LegalCopyright", "MIT License");
-        res.set("OriginalFilename", "HorizonModConverter.exe");
+        res.set("ProductName", "Oxyde");
+        res.set("FileDescription", "Oxyde - mods et lanceur pour Horizon");
+        res.set("CompanyName", "full_money");
+        res.set("LegalCopyright", "Copyright (c) 2026 full_money - MIT License");
+        res.set("OriginalFilename", "Oxyde.exe");
         if std::path::Path::new("assets/icon.ico").exists() {
             res.set_icon("assets/icon.ico");
         }

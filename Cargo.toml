@@ -1,13 +1,14 @@
 [package]
-name = "horizon-mod-converter"
-version = "1.0.0"
+name = "oxyde"
+version = "1.1.0"
 edition = "2021"
-description = "Convertit le contenu des mods Minecraft Java (.jar) en mods Horizon (.hmod) et les regroupe en modpacks partageables."
+description = "Magasin de mods, convertisseur de mods Java et lanceur pour Horizon (Minecraft Rust Edition)."
 license = "MIT"
+authors = ["full_money"]
 readme = "README.md"
 
 [[bin]]
-name = "horizon-mod-converter"
+name = "oxyde"
 path = "src/main.rs"
 
 [dependencies]
@@ -22,6 +23,8 @@ sha2 = "0.10"
 self-replace = "1"
 semver = "1"
 dirs = "6"
+egui_extras = { version = "0.31", features = ["http", "image"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
