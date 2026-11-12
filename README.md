@@ -1,8 +1,12 @@
-# Horizon Mod Converter
+# Oxyde
 
-Convertis tes mods **Minecraft Java** (Fabric, Quilt, Forge, NeoForge) en mods pour
-**[Horizon](https://playhorizon.dev/)**, la version de Minecraft Java Edition 26.3 réécrite en Rust.
-Regroupe-les ensuite en **modpack** à partager avec tes amis.
+**Le magasin de mods, le convertisseur et le lanceur pour [Horizon](https://playhorizon.dev/)**,
+la version de Minecraft Java Edition 26.3 réécrite en Rust (Minecraft Rust Edition).
+
+- Parcours les mods Horizon et les mods Java de Modrinth, installe-les en un clic.
+- Convertis tes mods **Java** (Fabric, Quilt, Forge, NeoForge) en mods Horizon.
+- Regroupe-les en **modpack** à partager avec tes amis.
+- Lance Horizon directement depuis l'app.
 
 Gratuit, open source (MIT), un seul `.exe`, sans installation.
 
