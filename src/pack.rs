@@ -1,40 +1,70 @@
-//! Modpacks partageables (`.hzmods`) et installation dans le dossier de jeu Horizon.
+//! Modpacks Oxyde (`.oxypack`) et installation de mods dans le dossier du jeu.
 //!
-//! Le format officiel `.hpack` de Horizon ne contient pas les mods : il les télécharge depuis le registre.
-//! Des mods convertis sur ta machine n'y sont pas, donc l'app utilise son propre format, simple :
-//! un zip avec `pack.json` (nom, version, liste des mods et leur SHA-256) et `mods/<id>.hmod`.
-//! À l'installation, chaque mod est vérifié par son SHA-256 puis copié dans `horizon-mods/`
-//! et activé dans `horizon-mods.txt`, comme le fait le jeu (`mod.<id>:true`).
+//! Un `.oxypack` est un petit zip :
+//! - `pack.json` : nom, version et liste des mods ;
+//! - chaque mod est une référence (registre Horizon ou Modrinth : il est retéléchargé et reporté chez ton ami)
+//!   ou, seulement s'il ne vient d'aucun des deux, un fichier `mods/<id>.hmod` intégré (vérifié par SHA-256).
+//!
+//! L'ancien format `.hzmods` (v1, tous les mods intégrés) se lit toujours.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-pub const PACK_EXT: &str = "hzmods";
+pub const PACK_EXT: &str = "oxypack";
+pub const LEGACY_EXT: &str = "hzmods";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PackMod {
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    pub file: String,
-    pub sha256: String,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "source", rename_all = "lowercase")]
+pub enum Entry {
+    Horizon { id: String, name: String },
+    Modrinth { slug: String, name: String },
+    File { id: String, name: String, file: String, sha256: String },
+}
+
+impl Entry {
+    pub fn name(&self) -> &str {
+        match self {
+            Entry::Horizon { name, .. } | Entry::Modrinth { name, .. } | Entry::File { name, .. } => name,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PackInfo {
+pub struct Pack {
     pub format: u32,
     pub name: String,
+    #[serde(default)]
     pub version: String,
+    #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub game: String,
-    pub mods: Vec<PackMod>,
+    pub mods: Vec<Entry>,
+}
+
+// ancien format v1
+#[derive(Deserialize)]
+struct V1Mod {
+    id: String,
+    #[serde(default)]
+    name: String,
+    file: String,
+    sha256: String,
+}
+#[derive(Deserialize)]
+struct V1 {
+    name: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    description: String,
+    mods: Vec<V1Mod>,
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let h = Sha256::digest(bytes);
-    h.iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Lit l'id, le nom et la version dans le `horizon-mod.toml` d'un .hmod.
@@ -55,29 +85,37 @@ pub fn hmod_info(path: &Path) -> Result<(String, String, String), String> {
     Ok((id, g("name"), g("version")))
 }
 
-pub fn create_pack(name: &str, description: &str, mods: &[PathBuf], out: &Path) -> Result<PathBuf, String> {
-    if mods.is_empty() {
-        return Err("aucun mod à mettre dans le pack".into());
-    }
-    let mut info = PackInfo {
-        format: 1,
-        name: name.trim().to_string(),
-        version: "1.0.0".into(),
-        description: description.trim().to_string(),
-        game: "26.3".into(),
-        mods: vec![],
-    };
-    let mut payload = Vec::new();
-    for m in mods {
-        let (id, mname, version) = hmod_info(m)?;
-        if info.mods.iter().any(|x| x.id == id) {
-            continue;
+/// Un mod installé en dossier (portage officiel) devient un .hmod en mémoire.
+pub fn zip_folder(dir: &Path) -> Result<Vec<u8>, String> {
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut z = zip::ZipWriter::new(&mut buf);
+        let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let mut stack = vec![dir.to_path_buf()];
+        let mut files = vec![];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).map_err(|e| e.to_string())?.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    files.push(p);
+                }
+            }
         }
-        let bytes = std::fs::read(m).map_err(|e| e.to_string())?;
-        let file = format!("{id}.hmod");
-        info.mods.push(PackMod { id, name: mname, version, file: file.clone(), sha256: sha256_hex(&bytes) });
-        payload.push((file, bytes));
+        files.sort();
+        for p in files {
+            let rel = p.strip_prefix(dir).map_err(|e| e.to_string())?.to_string_lossy().replace('\\', "/");
+            z.start_file(rel, o).map_err(|e| e.to_string())?;
+            z.write_all(&std::fs::read(&p).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        }
+        z.finish().map_err(|e| e.to_string())?;
     }
+    Ok(buf.into_inner())
+}
+
+/// Écrit un .oxypack. `files` donne le contenu des entrées `File` (id -> octets du .hmod).
+pub fn write_pack(pack: &Pack, files: &[(String, Vec<u8>)], out: &Path) -> Result<(), String> {
     let tmp = out.with_extension("tmp");
     {
         let f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
@@ -85,72 +123,76 @@ pub fn create_pack(name: &str, description: &str, mods: &[PathBuf], out: &Path) 
         let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         z.start_file("pack.json", o).map_err(|e| e.to_string())?;
-        z.write_all(serde_json::to_string_pretty(&info).unwrap().as_bytes()).map_err(|e| e.to_string())?;
-        z.start_file("LISEZ-MOI.txt", o).map_err(|e| e.to_string())?;
+        z.write_all(serde_json::to_string_pretty(pack).unwrap().as_bytes()).map_err(|e| e.to_string())?;
+        z.start_file("README.txt", o).map_err(|e| e.to_string())?;
         z.write_all(
             format!(
-                "Modpack Horizon « {} » ({} mods).\r\n\r\nPour l'installer : ouvre Oxyde et glisse ce fichier dans la fenêtre,\r\npuis clique sur « Installer ».\r\n\r\nÀ la main : copie les fichiers du dossier mods/ dans le dossier horizon-mods/ de ton jeu Horizon\r\n(le dossier qui contient options.txt), puis active-les dans Options > Mods.\r\n",
-                info.name,
-                info.mods.len()
+                "Modpack Oxyde \"{}\" ({} mods) for Horizon (Minecraft Rust Edition).\r\n\r\nTo install it: open Oxyde (https://github.com/0full-money0/oxyde) and drop this file in the window.\r\nOxyde downloads, ports and installs every mod for you.\r\n",
+                pack.name,
+                pack.mods.len()
             )
             .as_bytes(),
         )
         .map_err(|e| e.to_string())?;
-        for (file, bytes) in payload {
-            // les .hmod sont déjà compressés
-            z.start_file(format!("mods/{file}"), stored).map_err(|e| e.to_string())?;
-            z.write_all(&bytes).map_err(|e| e.to_string())?;
+        for (file, bytes) in files {
+            z.start_file(file.as_str(), stored).map_err(|e| e.to_string())?;
+            z.write_all(bytes).map_err(|e| e.to_string())?;
         }
         z.finish().map_err(|e| e.to_string())?;
     }
-    std::fs::rename(&tmp, out).map_err(|e| e.to_string())?;
-    Ok(out.to_path_buf())
+    std::fs::rename(&tmp, out).map_err(|e| e.to_string())
 }
 
-pub fn read_pack(path: &Path) -> Result<PackInfo, String> {
+pub fn read_pack(path: &Path) -> Result<Pack, String> {
     let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut z = zip::ZipArchive::new(f).map_err(|e| format!("pack invalide : {e}"))?;
+    let mut z = zip::ZipArchive::new(f).map_err(|e| format!("modpack invalide : {e}"))?;
     let mut s = String::new();
-    z.by_name("pack.json").map_err(|_| "pack invalide : pas de pack.json".to_string())?.read_to_string(&mut s).map_err(|e| e.to_string())?;
-    let info: PackInfo = serde_json::from_str(&s).map_err(|e| format!("pack.json invalide : {e}"))?;
-    if info.format != 1 {
-        return Err(format!("format de pack {} non pris en charge : mets l'app à jour", info.format));
+    z.by_name("pack.json").map_err(|_| "modpack invalide : pas de pack.json".to_string())?.read_to_string(&mut s).map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&s).map_err(|e| format!("pack.json invalide : {e}"))?;
+    match v["format"].as_u64() {
+        Some(1) => {
+            let old: V1 = serde_json::from_value(v).map_err(|e| e.to_string())?;
+            Ok(Pack {
+                format: 2,
+                name: old.name,
+                version: old.version,
+                description: old.description,
+                game: "26.3".into(),
+                mods: old
+                    .mods
+                    .into_iter()
+                    .map(|m| Entry::File { name: if m.name.is_empty() { m.id.clone() } else { m.name }, id: m.id, file: format!("mods/{}", m.file), sha256: m.sha256 })
+                    .collect(),
+            })
+        }
+        Some(2) => serde_json::from_value(v).map_err(|e| format!("pack.json invalide : {e}")),
+        Some(n) => Err(format!("format de modpack {n} non pris en charge : mets Oxyde à jour")),
+        None => Err("pack.json invalide : pas de format".into()),
     }
-    Ok(info)
 }
 
-fn safe_file_name(f: &str) -> bool {
-    f.ends_with(".hmod")
-        && f.len() <= 80
-        && f.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.')
-        && !f.starts_with('.')
+fn safe_entry_path(f: &str) -> bool {
+    let Some(name) = f.strip_prefix("mods/") else { return false };
+    name.ends_with(".hmod") && name.len() <= 80 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.') && !name.starts_with('.')
 }
 
-/// Installe un pack : vérifie chaque mod puis le copie et l'active. Retourne les ids installés.
-pub fn install_pack(pack: &Path, game_dir: &Path) -> Result<Vec<String>, String> {
-    let info = read_pack(pack)?;
+/// Sort un mod intégré dans un fichier temporaire, après vérification de son SHA-256.
+pub fn extract(pack: &Path, file: &str, sha256: &str) -> Result<PathBuf, String> {
+    if !safe_entry_path(file) {
+        return Err(format!("nom de fichier refusé dans le modpack : {file}"));
+    }
     let f = std::fs::File::open(pack).map_err(|e| e.to_string())?;
     let mut z = zip::ZipArchive::new(f).map_err(|e| e.to_string())?;
-    let mods_dir = game_dir.join("horizon-mods");
-    std::fs::create_dir_all(&mods_dir).map_err(|e| e.to_string())?;
-    let mut done = Vec::new();
-    for m in &info.mods {
-        if !safe_file_name(&m.file) {
-            return Err(format!("nom de fichier refusé dans le pack : {}", m.file));
-        }
-        let mut bytes = Vec::new();
-        z.by_name(&format!("mods/{}", m.file))
-            .map_err(|_| format!("{} manque dans le pack", m.file))?
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if sha256_hex(&bytes) != m.sha256 {
-            return Err(format!("{} est corrompu (SHA-256 différent)", m.file));
-        }
-        std::fs::write(mods_dir.join(&m.file), &bytes).map_err(|e| e.to_string())?;
-        done.push(m.id.clone());
+    let mut bytes = Vec::new();
+    z.by_name(file).map_err(|_| format!("{file} manque dans le modpack"))?.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if sha256_hex(&bytes) != sha256 {
+        return Err(format!("{file} est corrompu (SHA-256 différent)"));
     }
-    enable_mods(game_dir, &done)?;
-    Ok(done)
+    let dir = std::env::temp_dir().join("oxyde-pack");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let out = dir.join(file.trim_start_matches("mods/"));
+    std::fs::write(&out, bytes).map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 /// Copie des .hmod dans `horizon-mods/` et les active.
@@ -161,28 +203,10 @@ pub fn install_mods(mods: &[PathBuf], game_dir: &Path) -> Result<Vec<String>, St
     for m in mods {
         let (id, _, _) = hmod_info(m)?;
         std::fs::copy(m, mods_dir.join(format!("{id}.hmod"))).map_err(|e| e.to_string())?;
+        crate::game::set_enabled(game_dir, &id, true)?;
         ids.push(id);
     }
-    enable_mods(game_dir, &ids)?;
     Ok(ids)
-}
-
-/// Écrit `mod.<id>:true` dans `horizon-mods.txt`, en gardant les autres lignes.
-pub fn enable_mods(game_dir: &Path, ids: &[String]) -> Result<(), String> {
-    let path = game_dir.join("horizon-mods.txt");
-    let old = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut lines: Vec<String> = old.lines().map(String::from).collect();
-    for id in ids {
-        let key = format!("mod.{id}:");
-        let line = format!("mod.{id}:true");
-        match lines.iter_mut().find(|l| l.starts_with(&key)) {
-            Some(l) => *l = line,
-            None => lines.push(line),
-        }
-    }
-    let mut text = lines.join("\n");
-    text.push('\n');
-    std::fs::write(&path, text).map_err(|e| e.to_string())
 }
 
 /// Un dossier de jeu Horizon contient `options.txt` (ou déjà `horizon-mods/`).
@@ -196,30 +220,36 @@ mod tests {
     use crate::convert::{convert_jar, tests::make_jar, Options};
 
     #[test]
-    fn pack_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("hmc-pack-{}", std::process::id()));
+    fn pack_roundtrip_v2() {
+        let dir = std::env::temp_dir().join(format!("oxy-pack-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut outs = vec![];
-        for id in ["alpha", "beta"] {
-            let jar = dir.join(format!("{id}.jar"));
-            let fmj = format!(r#"{{"id":"{id}","version":"1.0"}}"#);
-            let tex = format!("assets/{id}/textures/item/x.png");
-            make_jar(&jar, &[("fabric.mod.json", fmj.as_str()), (tex.as_str(), "png")]);
-            outs.push(convert_jar(&jar, &dir.join("out"), &Options::default()).unwrap().output);
-        }
-        let pack = dir.join("p.hzmods");
-        create_pack("Mon pack", "", &outs, &pack).unwrap();
-        let info = read_pack(&pack).unwrap();
-        assert_eq!(info.mods.len(), 2);
+        let jar = dir.join("alpha.jar");
+        make_jar(&jar, &[("fabric.mod.json", r#"{"id":"alpha","version":"1.0"}"#), ("assets/alpha/textures/item/x.png", "png")]);
+        let hmod = convert_jar(&jar, &dir.join("out"), &Options::default()).unwrap().output;
+        let bytes = std::fs::read(&hmod).unwrap();
+        let pack = Pack {
+            format: 2,
+            name: "Mon pack".into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            game: "26.3".into(),
+            mods: vec![
+                Entry::Horizon { id: "zoom".into(), name: "Zoom".into() },
+                Entry::Modrinth { slug: "macaws-doors".into(), name: "Macaw's Doors".into() },
+                Entry::File { id: "alpha".into(), name: "alpha".into(), file: "mods/alpha.hmod".into(), sha256: sha256_hex(&bytes) },
+            ],
+        };
+        let out = dir.join("p.oxypack");
+        write_pack(&pack, &[("mods/alpha.hmod".into(), bytes)], &out).unwrap();
+        let back = read_pack(&out).unwrap();
+        assert_eq!(back.mods, pack.mods);
+        let Entry::File { file, sha256, .. } = &back.mods[2] else { panic!() };
+        let x = extract(&out, file, sha256).unwrap();
         let game = dir.join("game");
-        std::fs::create_dir_all(&game).unwrap();
-        std::fs::write(game.join("horizon-mods.txt"), "mod.alpha:false\nmod.zzz:true\n").unwrap();
-        let ids = install_pack(&pack, &game).unwrap();
-        assert_eq!(ids, vec!["alpha", "beta"]);
-        let txt = std::fs::read_to_string(game.join("horizon-mods.txt")).unwrap();
-        assert_eq!(txt, "mod.alpha:true\nmod.zzz:true\nmod.beta:true\n");
-        assert!(game.join("horizon-mods/beta.hmod").is_file());
+        assert_eq!(install_mods(&[x], &game).unwrap(), vec!["alpha"]);
+        assert!(std::fs::read_to_string(game.join("horizon-mods.txt")).unwrap().contains("mod.alpha:true"));
+        assert!(extract(&out, "mods/../evil.hmod", sha256).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -15,7 +15,6 @@ pub struct SearchResp {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct Hit {
-    pub project_id: String,
     pub slug: String,
     pub title: String,
     #[serde(default)]
@@ -92,4 +91,23 @@ pub fn download_jar(project_id: &str) -> Result<PathBuf, String> {
     let path = dir.join(&f.filename);
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+#[derive(Deserialize, Clone, Debug)]
+struct VersionFile {
+    project_id: String,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct ProjectInfo {
+    pub slug: String,
+    pub title: String,
+}
+
+/// Retrouve le projet Modrinth d'un .jar grâce à son empreinte SHA-1.
+pub fn identify(jar: &std::path::Path) -> Option<ProjectInfo> {
+    let bytes = std::fs::read(jar).ok()?;
+    let sha1 = net::sha1_hex(&bytes);
+    let vf: VersionFile = net::get_json(&format!("{API}/version_file/{sha1}?algorithm=sha1")).ok()?;
+    net::get_json(&format!("{API}/project/{}", net::urlencode(&vf.project_id))).ok()
 }

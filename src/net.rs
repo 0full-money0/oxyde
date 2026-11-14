@@ -66,3 +66,8 @@ pub fn safe_name(n: &str) -> bool {
         && !n.starts_with('.')
         && n.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
 }
+
+pub fn sha1_hex(b: &[u8]) -> String {
+    use sha1::{Digest as _, Sha1};
+    Sha1::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+}

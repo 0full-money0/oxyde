@@ -28,46 +28,6 @@ pub fn launcher_exe() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
-fn command(exe: &Path) -> std::process::Command {
-    #[allow(unused_mut)]
-    let mut c = std::process::Command::new(exe);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    c
-}
-
-/// Lance Horizon (`horizon-launcher play`). Attend quelques secondes pour remonter une erreur rapide.
-pub fn play(exe: &Path) -> Result<(), String> {
-    let mut child = command(exe)
-        .arg("play")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("impossible de lancer Horizon : {e}"))?;
-    for _ in 0..20 {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        if let Ok(Some(status)) = child.try_wait() {
-            if status.success() {
-                return Ok(());
-            }
-            let mut err = String::new();
-            if let Some(mut s) = child.stderr.take() {
-                let _ = s.read_to_string(&mut err);
-            }
-            let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
-            return Err(if last.is_empty() {
-                "Horizon s'est arrêté au démarrage. Ouvre le launcher Horizon pour te connecter avec ton compte Microsoft.".into()
-            } else {
-                format!("Horizon : {last}")
-            });
-        }
-    }
-    Ok(())
-}
-
 pub fn open_launcher(exe: &Path) -> Result<(), String> {
     std::process::Command::new(exe).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
@@ -94,6 +54,13 @@ fn enabled_set(game_dir: &Path) -> std::collections::HashMap<String, bool> {
         .collect()
 }
 
+fn folder_info(dir: &Path) -> Option<(String, String, String)> {
+    let v: toml::Value = toml::from_str(&std::fs::read_to_string(dir.join("horizon-mod.toml")).ok()?).ok()?;
+    let g = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let id = g("id");
+    (!id.is_empty()).then(|| (id, g("name"), g("version")))
+}
+
 fn native_info(path: &Path) -> Option<(String, String)> {
     let f = std::fs::File::open(path).ok()?;
     let mut z = zip::ZipArchive::new(f).ok()?;
@@ -112,10 +79,15 @@ pub fn scan(game_dir: &Path) -> Vec<InstalledMod> {
         v
     };
     for p in list(&game_dir.join("horizon-mods")) {
-        if p.extension().and_then(|e| e.to_str()) != Some("hmod") {
-            continue;
-        }
-        if let Ok((id, name, version)) = crate::pack::hmod_info(&p) {
+        // un mod est un .hmod, ou un dossier qui contient horizon-mod.toml (ce que produit le portage officiel)
+        let info = if p.is_dir() {
+            folder_info(&p)
+        } else if p.extension().and_then(|e| e.to_str()) == Some("hmod") {
+            crate::pack::hmod_info(&p).ok()
+        } else {
+            None
+        };
+        if let Some((id, name, version)) = info {
             let enabled = on.get(&id).copied().unwrap_or(false);
             out.push(InstalledMod { name: if name.is_empty() { id.clone() } else { name }, id, version, path: p, native: false, enabled });
         }
@@ -149,7 +121,11 @@ pub fn set_enabled(game_dir: &Path, id: &str, on: bool) -> Result<(), String> {
 }
 
 pub fn remove(game_dir: &Path, m: &InstalledMod) -> Result<(), String> {
-    std::fs::remove_file(&m.path).map_err(|e| e.to_string())?;
+    if m.path.is_dir() {
+        std::fs::remove_dir_all(&m.path).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::remove_file(&m.path).map_err(|e| e.to_string())?;
+    }
     if !m.native {
         let path = game_dir.join("horizon-mods.txt");
         if let Ok(old) = std::fs::read_to_string(&path) {
@@ -160,4 +136,17 @@ pub fn remove(game_dir: &Path, m: &InstalledMod) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Mods Java convertis par Oxyde depuis Modrinth : id Horizon -> slug Modrinth (pour les modpacks).
+pub fn sources(game_dir: &Path) -> std::collections::BTreeMap<String, String> {
+    std::fs::read_to_string(game_dir.join("oxyde-sources.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+pub fn record_source(game_dir: &Path, id: &str, slug: &str) {
+    let mut m = sources(game_dir);
+    m.insert(id.to_string(), slug.to_string());
+    if let Ok(t) = serde_json::to_string_pretty(&m) {
+        let _ = std::fs::write(game_dir.join("oxyde-sources.json"), t);
+    }
 }
