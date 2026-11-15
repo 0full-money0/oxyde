@@ -4,11 +4,11 @@ use crate::{fx, theme};
 use eframe::egui::{self, Color32, RichText};
 use std::path::Path;
 
-pub const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
-pub const RED: Color32 = Color32::from_rgb(248, 113, 113);
-pub const ORANGE: Color32 = Color32::from_rgb(251, 191, 36);
-pub const RUST: Color32 = Color32::from_rgb(255, 106, 43);
-pub const CARD: Color32 = Color32::from_rgba_premultiplied(17, 17, 23, 242);
+pub const GREEN: Color32 = Color32::from_rgb(92, 182, 155);
+pub const RED: Color32 = Color32::from_rgb(218, 96, 80);
+pub const ORANGE: Color32 = Color32::from_rgb(226, 170, 72);
+pub const RUST: Color32 = Color32::from_rgb(214, 118, 64);
+pub const CARD: Color32 = Color32::from_rgb(27, 26, 23);
 pub const BORDER: Color32 = theme::LINE;
 pub const MUTED: Color32 = theme::SUBTLE;
 
@@ -92,7 +92,7 @@ pub fn stat(ui: &mut egui::Ui, icon: fx::Icon, big: &str, small: &str) {
     surface(ui, 16, |ui| {
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(egui::vec2(46.0, 46.0), egui::Sense::hover());
-            fx::rounded_gradient(ui.painter(), r, 12.0, theme::ACCENT_A, theme::ACCENT_B);
+            fx::rounded_gradient(ui.painter(), r, 4.0, theme::ACCENT_A, theme::ACCENT_B);
             fx::icon(ui.painter(), icon, r.center(), Color32::WHITE);
             ui.add_space(6.0);
             ui.vertical(|ui| {
@@ -106,7 +106,7 @@ pub fn stat(ui: &mut egui::Ui, icon: fx::Icon, big: &str, small: &str) {
 /// Liseré clair en haut d'un bloc : donne l'impression d'une lumière venant d'au-dessus.
 pub fn top_light(ui: &egui::Ui, r: egui::Rect) {
     let y = r.top() + 1.0;
-    ui.painter().line_segment([egui::pos2(r.left() + 14.0, y), egui::pos2(r.right() - 14.0, y)], egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 22)));
+    ui.painter().line_segment([egui::pos2(r.left() + 14.0, y), egui::pos2(r.right() - 14.0, y)], egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 240, 220, 12)));
 }
 
 /// Petit titre de section.
@@ -121,9 +121,8 @@ pub fn surface(ui: &mut egui::Ui, pad: i8, add: impl FnOnce(&mut egui::Ui)) {
     let resp = egui::Frame::NONE
         .fill(CARD)
         .stroke(egui::Stroke::new(1.0_f32, BORDER))
-        .corner_radius(16.0)
+        .corner_radius(4.0)
         .inner_margin(pad)
-        .shadow(egui::Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(90) })
         .outer_margin(egui::Margin { bottom: 10, ..Default::default() })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -132,7 +131,7 @@ pub fn surface(ui: &mut egui::Ui, pad: i8, add: impl FnOnce(&mut egui::Ui)) {
     let mut r = resp.response.rect;
     r.max.y -= 10.0;
     top_light(ui, r);
-    fx::hover_outline(ui, r, 14.0);
+    fx::hover_outline(ui, r, 4.0);
 }
 
 pub fn title(ui: &mut egui::Ui, t: &str, sub: &str) {
@@ -194,6 +193,8 @@ pub fn pretty_path(p: &Path) -> String {
 /// État du bouton d'une ligne de mod.
 pub enum RowAction<'a> {
     Install,
+    /// Bouton principal avec un autre texte (« Ouvrir »).
+    Button(&'a str),
     Busy,
     Done,
     Info(&'a str),
@@ -206,7 +207,7 @@ pub fn row(ui: &mut egui::Ui, icon: Option<&str>, title: &str, sub: &str, badge:
     let resp = egui::Frame::NONE
         .fill(theme::SURFACE)
         .stroke(egui::Stroke::new(1.0_f32, BORDER))
-        .corner_radius(12.0)
+        .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(10, 9))
         .outer_margin(egui::Margin { bottom: 6, ..Default::default() })
         .show(ui, |ui| {
@@ -217,6 +218,9 @@ pub fn row(ui: &mut egui::Ui, icon: Option<&str>, title: &str, sub: &str, badge:
                         let b = theme::primary(ui, "Installer", egui::vec2(0.0, 32.0));
                         crate::tour::mark(ui, &format!("row:{title}"), b.rect);
                         clicked = b.clicked();
+                    }
+                    RowAction::Button(t) => {
+                        clicked = theme::primary(ui, t, egui::vec2(0.0, 32.0)).clicked();
                     }
                     RowAction::Busy => {
                         ui.spinner();
@@ -232,13 +236,13 @@ pub fn row(ui: &mut egui::Ui, icon: Option<&str>, title: &str, sub: &str, badge:
                     let size = egui::vec2(40.0, 40.0);
                     match icon {
                         Some(u) if u.starts_with("https://") => {
-                            ui.add(egui::Image::new(u).fit_to_exact_size(size).corner_radius(9.0));
+                            ui.add(egui::Image::new(u).fit_to_exact_size(size).corner_radius(4.0));
                         }
                         _ => {
                             let (r, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                            fx::rounded_gradient(ui.painter(), r, 9.0, Color32::from_rgb(60, 40, 44), Color32::from_rgb(30, 26, 34));
+                            fx::rounded_gradient(ui.painter(), r, 4.0, Color32::from_rgb(46, 43, 38), Color32::from_rgb(46, 43, 38));
                             let letter = title.chars().next().unwrap_or('?').to_uppercase().to_string();
-                            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, letter, egui::FontId::proportional(19.0), Color32::from_rgb(255, 190, 140));
+                            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, letter, egui::FontId::proportional(19.0), theme::ACCENT_A);
                         }
                     }
                     ui.vertical(|ui| {
@@ -255,14 +259,14 @@ pub fn row(ui: &mut egui::Ui, icon: Option<&str>, title: &str, sub: &str, badge:
         });
     let mut r = resp.response.rect;
     r.max.y -= 6.0;
-    fx::hover_outline(ui, r, 12.0);
+    fx::hover_outline(ui, r, 4.0);
     clicked
 }
 
 /// Petite étiquette colorée.
 pub fn chip(ui: &mut egui::Ui, text: &str) {
-    egui::Frame::NONE.fill(Color32::from_rgb(40, 26, 26)).corner_radius(6.0).inner_margin(egui::Margin::symmetric(7, 2)).show(ui, |ui| {
-        ui.label(RichText::new(text).size(11.0).family(theme::semi()).color(Color32::from_rgb(255, 150, 110)));
+    egui::Frame::NONE.fill(Color32::from_rgb(46, 36, 28)).corner_radius(4.0).inner_margin(egui::Margin::symmetric(7, 2)).show(ui, |ui| {
+        ui.add(egui::Label::new(RichText::new(text).size(11.0).family(theme::semi()).color(Color32::from_rgb(230, 160, 120))).extend());
     });
 }
 
@@ -270,11 +274,11 @@ pub fn chip(ui: &mut egui::Ui, text: &str) {
 pub fn pane(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     let h = ui.available_height();
     egui::Frame::NONE
-        .fill(Color32::from_rgba_premultiplied(13, 13, 18, 245))
+        .fill(Color32::from_rgb(23, 22, 19))
         .stroke(egui::Stroke::new(1.0_f32, BORDER))
-        .corner_radius(16.0)
+        .corner_radius(4.0)
         .inner_margin(14.0)
-        .shadow(egui::Shadow { offset: [0, 8], blur: 26, spread: 0, color: Color32::from_black_alpha(120) })
+        .shadow(egui::Shadow { offset: [5, 5], blur: 0, spread: 0, color: Color32::from_black_alpha(110) })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.set_min_height((h - 30.0).max(0.0));

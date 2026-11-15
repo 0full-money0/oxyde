@@ -1,16 +1,21 @@
-//! Identité visuelle d'Oxyde : police Inter, palette, boutons dégradés, onglets en pilule.
+//! Identité visuelle d'Oxyde : le cuivre qui s'oxyde.
+//! Pierre sombre et chaude, cuivre mat, vert-de-gris. Aplats, angles nets comme des blocs,
+//! boutons avec un relief de bloc. Aucun dégradé, aucun halo.
 
-use crate::fx;
 use eframe::egui::{self, Color32, FontFamily, FontId, RichText, Sense, Vec2};
 
-pub const BG: Color32 = Color32::from_rgb(9, 9, 12);
-pub const SURFACE: Color32 = Color32::from_rgb(18, 18, 24);
-pub const SURFACE2: Color32 = Color32::from_rgb(25, 25, 33);
-pub const LINE: Color32 = Color32::from_rgb(38, 38, 48);
-pub const TEXT: Color32 = Color32::from_rgb(236, 236, 241);
-pub const SUBTLE: Color32 = Color32::from_rgb(139, 139, 154);
-pub const ACCENT_A: Color32 = Color32::from_rgb(255, 138, 42);
-pub const ACCENT_B: Color32 = Color32::from_rgb(255, 61, 90);
+pub const BG: Color32 = Color32::from_rgb(19, 18, 16);
+pub const SURFACE: Color32 = Color32::from_rgb(27, 26, 23);
+pub const SURFACE2: Color32 = Color32::from_rgb(36, 34, 30);
+pub const LINE: Color32 = Color32::from_rgb(52, 49, 43);
+pub const TEXT: Color32 = Color32::from_rgb(237, 231, 220);
+pub const SUBTLE: Color32 = Color32::from_rgb(154, 146, 133);
+/// Cuivre.
+pub const ACCENT_A: Color32 = Color32::from_rgb(214, 118, 64);
+/// Vert-de-gris (le cuivre oxydé).
+pub const ACCENT_B: Color32 = Color32::from_rgb(92, 182, 155);
+/// Rayon des angles : presque carré, comme un bloc.
+pub const R: f32 = 4.0;
 
 pub fn semi() -> FontFamily {
     FontFamily::Name("semi".into())
@@ -58,15 +63,19 @@ pub fn apply_style(ctx: &egui::Context) {
     v.panel_fill = BG;
     v.window_fill = SURFACE;
     v.window_stroke = egui::Stroke::new(1.0_f32, LINE);
-    v.window_corner_radius = egui::CornerRadius::same(16);
-    v.extreme_bg_color = Color32::from_rgb(14, 14, 19);
+    v.window_corner_radius = egui::CornerRadius::same(4);
+    v.window_shadow = egui::Shadow { offset: [6, 6], blur: 0, spread: 0, color: Color32::from_black_alpha(110) };
+    v.popup_shadow = egui::Shadow { offset: [4, 4], blur: 0, spread: 0, color: Color32::from_black_alpha(110) };
+    v.extreme_bg_color = Color32::from_rgb(15, 14, 12);
     v.faint_bg_color = SURFACE2;
-    v.selection.bg_fill = Color32::from_rgb(255, 100, 60);
-    v.hyperlink_color = ACCENT_A;
+    v.selection.bg_fill = Color32::from_rgb(150, 82, 44);
+    v.selection.stroke = egui::Stroke::new(1.0_f32, TEXT);
+    v.hyperlink_color = ACCENT_B;
     v.override_text_color = None;
-    let r = egui::CornerRadius::same(10);
+    let r = egui::CornerRadius::same(3);
     for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
         w.corner_radius = r;
+        w.expansion = 0.0;
     }
     v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, LINE);
     v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, TEXT);
@@ -74,43 +83,42 @@ pub fn apply_style(ctx: &egui::Context) {
     v.widgets.inactive.bg_fill = SURFACE2;
     v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, LINE);
     v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, TEXT);
-    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(34, 34, 44);
-    v.widgets.hovered.bg_fill = Color32::from_rgb(34, 34, 44);
-    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(64, 64, 78));
-    v.widgets.active.weak_bg_fill = Color32::from_rgb(40, 40, 52);
+    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(46, 43, 38);
+    v.widgets.hovered.bg_fill = Color32::from_rgb(46, 43, 38);
+    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, Color32::from_rgb(92, 84, 72));
+    v.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, TEXT);
+    v.widgets.active.weak_bg_fill = Color32::from_rgb(56, 52, 46);
+    v.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT_A);
     style.visuals = v;
     ctx.set_style(style);
 }
 
-/// Bouton principal : dégradé orange → rouge, texte blanc.
+/// Bouton principal : aplat de cuivre, avec le relief d'un bloc (arête sombre en bas).
 pub fn primary(ui: &mut egui::Ui, label: &str, min: Vec2) -> egui::Response {
     primary_sized(ui, label, min, 14.5, true)
 }
 
 pub fn primary_sized(ui: &mut egui::Ui, label: &str, min: Vec2, size: f32, enabled: bool) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::new(size, semi()), Color32::WHITE);
+    let ink = if enabled { Color32::from_rgb(255, 247, 238) } else { Color32::from_rgb(140, 132, 120) };
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::new(size, semi()), ink);
     let want = egui::vec2((galley.size().x + 32.0).max(min.x), (galley.size().y + 16.0).max(min.y));
     let (rect, resp) = ui.allocate_exact_size(want, if enabled { Sense::click() } else { Sense::hover() });
-    let hover = ui.ctx().animate_bool_with_time(resp.id, enabled && resp.hovered(), 0.12);
-    let radius = (rect.height() / 2.0).min(14.0);
+    let hover = ui.ctx().animate_bool_with_time(resp.id, enabled && resp.hovered(), 0.08);
+    let pressed = enabled && resp.is_pointer_button_down_on();
     let p = ui.painter();
-    // halo seulement pour les grands boutons (pas dans les listes)
-    if enabled && rect.height() >= 40.0 {
-        fx::soft_glow(p, rect.center() + egui::vec2(0.0, 6.0), rect.width() * 0.5, Color32::from_rgba_unmultiplied(255, 90, 60, (24.0 + 36.0 * hover) as u8));
-    } else if enabled && hover > 0.0 {
-        fx::soft_glow(p, rect.center(), rect.width() * 0.45, Color32::from_rgba_unmultiplied(255, 90, 60, (30.0 * hover) as u8));
+    let edge = 3.0;
+    let (face, side) = if enabled { (lighten(ACCENT_A, hover * 0.1), Color32::from_rgb(140, 70, 34)) } else { (Color32::from_rgb(58, 54, 48), Color32::from_rgb(40, 37, 33)) };
+    let face_rect = if pressed { rect.with_min_y(rect.top() + edge) } else { rect.with_max_y(rect.bottom() - edge) };
+    if !pressed {
+        p.rect_filled(rect, R, side);
     }
-    let (a, b) = if enabled {
-        (lighten(ACCENT_A, hover * 0.12), lighten(ACCENT_B, hover * 0.12))
-    } else {
-        (Color32::from_rgb(70, 60, 58), Color32::from_rgb(60, 50, 54))
-    };
-    fx::rounded_gradient(p, rect, radius, a, b);
+    p.rect_filled(face_rect, R, face);
+    // liseré clair en haut : la lumière tombe sur l'arête du bloc
     p.line_segment(
-        [rect.left_top() + egui::vec2(radius, 1.0), rect.right_top() + egui::vec2(-radius, 1.0)],
-        egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 60)),
+        [face_rect.left_top() + egui::vec2(R, 1.0), face_rect.right_top() + egui::vec2(-R, 1.0)],
+        egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 230, 200, if enabled { 70 } else { 15 })),
     );
-    p.galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
+    p.galley(face_rect.center() - galley.size() / 2.0, galley, ink);
     if enabled {
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {
@@ -123,11 +131,11 @@ fn lighten(c: Color32, k: f32) -> Color32 {
     Color32::from_rgb(l(c.r()), l(c.g()), l(c.b()))
 }
 
-/// Onglets en pilule dans un rail. Renvoie l'index cliqué.
+/// Onglets côte à côte dans un rail. Renvoie l'index cliqué.
 pub fn pills(ui: &mut egui::Ui, labels: &[&str], selected: usize, key_prefix: &str) -> Option<usize> {
     let mut clicked = None;
-    egui::Frame::NONE.fill(Color32::from_rgb(16, 16, 22)).stroke(egui::Stroke::new(1.0_f32, LINE)).corner_radius(12.0).inner_margin(4.0).show(ui, |ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
+    egui::Frame::NONE.fill(Color32::from_rgb(22, 21, 18)).stroke(egui::Stroke::new(1.0_f32, LINE)).corner_radius(R).inner_margin(3.0).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
         ui.horizontal(|ui| {
             for (i, label) in labels.iter().enumerate() {
                 let sel = i == selected;
@@ -136,12 +144,10 @@ pub fn pills(ui: &mut egui::Ui, labels: &[&str], selected: usize, key_prefix: &s
                 crate::tour::mark(ui, &format!("{key_prefix}{label}"), rect);
                 let p = ui.painter();
                 if sel {
-                    p.rect_filled(rect, 9.0, SURFACE2);
-                    p.rect_stroke(rect, 9.0, egui::Stroke::new(1.0_f32, Color32::from_rgb(60, 60, 74)), egui::StrokeKind::Inside);
-                    let bar = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.bottom() - 2.0), egui::vec2(18.0, 2.5));
-                    fx::rounded_gradient(p, bar, 1.2, ACCENT_A, ACCENT_B);
+                    p.rect_filled(rect, 3.0, SURFACE2);
+                    p.rect_filled(egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 2.0), rect.right_bottom()), 0.0, ACCENT_A);
                 } else if resp.hovered() {
-                    p.rect_filled(rect, 9.0, Color32::from_rgb(22, 22, 30));
+                    p.rect_filled(rect, 3.0, Color32::from_rgb(30, 29, 25));
                 }
                 let col = if sel { TEXT } else { SUBTLE };
                 p.galley(rect.center() - galley.size() / 2.0 - egui::vec2(0.0, 1.0), galley, col);
@@ -159,5 +165,5 @@ pub fn heading(text: &str, size: f32) -> RichText {
 }
 
 pub fn label_caps(text: &str) -> RichText {
-    RichText::new(text.to_uppercase()).family(semi()).size(11.5).color(Color32::from_rgb(255, 150, 100))
+    RichText::new(text.to_uppercase()).family(semi()).size(11.0).extra_letter_spacing(1.6).color(ACCENT_B)
 }

@@ -55,6 +55,10 @@ pub struct Instance {
     pub home: PathBuf,
     #[serde(default)]
     pub selected: bool,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub played_secs: u64,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -196,6 +200,21 @@ impl Engine {
     pub fn create_instance(&self, name: &str) -> Result<Instance, String> {
         let out = self.quiet(&["instance", "create", name, "--json"], Duration::from_secs(60))?;
         serde_json::from_str(out.trim()).map_err(|e| format!("réponse du launcher illisible : {e}"))
+    }
+
+    /// Renomme un profil (son dossier ne bouge pas).
+    pub fn rename_instance(&self, id: &str, name: &str) -> Result<(), String> {
+        self.quiet(&["instance", "rename", id, name], Duration::from_secs(60)).map(|_| ())
+    }
+
+    /// Couleur du profil, reprise dans le launcher Horizon (« #ff8a2a »).
+    pub fn set_icon(&self, id: &str, icon: &str) -> Result<(), String> {
+        self.quiet(&["instance", "icon", id, icon], Duration::from_secs(60)).map(|_| ())
+    }
+
+    /// Supprime un profil : son dossier part dans la Corbeille (récupérable).
+    pub fn delete_instance(&self, id: &str) -> Result<(), String> {
+        self.quiet(&["instance", "delete", id], Duration::from_secs(60)).map(|_| ())
     }
 
     pub fn remove(&self, slug: &str) -> Result<String, String> {

@@ -9,6 +9,7 @@ mod installer;
 mod modrinth;
 mod net;
 mod pack;
+mod perf;
 mod registry;
 mod setup;
 mod theme;
@@ -107,6 +108,20 @@ fn cli(args: &[String]) -> Option<i32> {
                 Err(e) => println!("ERR {e}"),
             }
             Some(if r.is_ok() { 0 } else { 1 })
+        }
+        // règle le profil principal (ou le dossier donné) pour ce PC
+        Some("--optimize") => {
+            let dir = args.get(2).map(PathBuf::from).unwrap_or_else(main_game_dir);
+            let m = perf::detect(&dir);
+            println!("PC  {} ({:?})", m.gpu, m.tier);
+            let c = perf::optimize(&dir, &m);
+            if c.is_empty() {
+                println!("OK  déjà réglé");
+            }
+            for l in c {
+                println!("OK  {l}");
+            }
+            Some(0)
         }
         Some("--profiles") => {
             let Some(e) = engine::Engine::find() else {
@@ -237,6 +252,14 @@ struct Settings {
     skip_setup: bool,
     /// Mods Modrinth que Horizon a refusés (slug -> raison) : ils ne sont plus proposés à l'installation.
     not_portable: std::collections::BTreeMap<String, String>,
+    /// Régler le jeu selon le PC avant chaque partie (évite les plantages « mémoire vidéo pleine »).
+    optimize: bool,
+    /// Réduire Oxyde pendant la partie : il ne prend plus rien au jeu.
+    minimize_on_play: bool,
+    /// Fond animé (désactivable sur les petits PC).
+    animations: bool,
+    /// Image choisie pour chaque profil (id -> copie gardée par Oxyde).
+    profile_images: std::collections::BTreeMap<String, PathBuf>,
 }
 
 impl Default for Settings {
@@ -251,6 +274,10 @@ impl Default for Settings {
             cf_key: String::new(),
             skip_setup: false,
             not_portable: Default::default(),
+            optimize: true,
+            minimize_on_play: true,
+            animations: true,
+            profile_images: Default::default(),
         }
     }
 }
@@ -262,14 +289,72 @@ fn imports_dir() -> PathBuf {
 /// Écran de lancement du jeu.
 struct Launch {
     name: String,
+    id: Option<String>,
     started: f64,
+    /// Réglages faits pour ce PC, carte graphique, mods actifs.
+    prep: Option<(Vec<String>, String, usize)>,
     result: Option<Result<(), String>>,
     done_at: Option<f64>,
+}
+
+/// Fenêtre de création / modification d'un profil.
+struct ProfileEdit {
+    id: Option<String>,
+    name: String,
+    color: usize,
+    image: Option<PathBuf>,
+    confirm_delete: bool,
+    busy: bool,
+}
+
+/// Couleurs proposées pour les profils (reprises par le launcher Horizon).
+const PROFILE_COLORS: [(u8, u8, u8); 8] = [(214, 118, 64), (186, 76, 60), (92, 182, 155), (72, 140, 172), (138, 110, 178), (210, 168, 72), (118, 150, 82), (128, 122, 112)];
+
+fn color_hex(i: usize) -> String {
+    let (r, g, b) = PROFILE_COLORS[i % PROFILE_COLORS.len()];
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// Couleur d'un profil : celle du launcher si c'en est une, sinon tirée de son id.
+fn profile_color_index(p: &engine::Instance) -> usize {
+    if let Some(hex) = p.icon.as_deref().filter(|h| h.starts_with('#')) {
+        if let Some(i) = (0..PROFILE_COLORS.len()).find(|&i| color_hex(i).eq_ignore_ascii_case(hex)) {
+            return i;
+        }
+    }
+    p.id.bytes().fold(7usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize)) % PROFILE_COLORS.len()
+}
+
+fn profile_color(i: usize) -> Color32 {
+    let (r, g, b) = PROFILE_COLORS[i % PROFILE_COLORS.len()];
+    Color32::from_rgb(r, g, b)
+}
+
+fn profiles_dir() -> PathBuf {
+    dirs::document_dir().or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from(".")).join("Oxyde").join("Profils")
+}
+
+/// Nom affiché d'un profil.
+fn profile_label(p: &engine::Instance) -> String {
+    if p.kind == "default" && p.name == "Horizon" {
+        "Horizon (principal)".into()
+    } else {
+        p.name.trim().to_string()
+    }
+}
+
+fn played(secs: u64) -> String {
+    match secs {
+        0 => "jamais lancé".into(),
+        s if s < 3600 => format!("{} min de jeu", (s / 60).max(1)),
+        s => format!("{} h {:02} de jeu", s / 3600, (s % 3600) / 60),
+    }
 }
 
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
     Home,
+    Profiles,
     Mods,
     Packs,
     Settings,
@@ -327,8 +412,25 @@ enum Msg {
     TaskDone,
     Launched(Result<(), String>),
     CurseForge(Result<Vec<curseforge::Mod>, String>),
-    ProfileCreated(Result<engine::Instance, String>),
     SetupDone(Result<PathBuf, String>),
+    /// Avant le lancement : réglages faits, carte graphique, nombre de mods actifs.
+    LaunchPrep(Vec<String>, String, usize),
+    /// Le jeu tourne (true) ; à sa fermeture, la raison d'un éventuel plantage.
+    Game(bool),
+    GameEnded(Option<String>),
+    ProfileSaved(Result<(String, Option<PathBuf>, bool), String>),
+    ProfileDeleted(Result<String, String>),
+    Machine(perf::Machine),
+    /// Recherche de modpacks Modrinth.
+    MrPacks { gen: u64, offset: u64, result: Result<modrinth::SearchResp, String> },
+    /// Un modpack ouvert : son contenu et le .mrpack téléchargé.
+    MrPackOpened { slug: String, result: Result<(modrinth::PackInfo, PathBuf), String> },
+}
+
+/// Un modpack Modrinth ouvert dans Oxyde.
+struct PackView {
+    hit: modrinth::Hit,
+    state: Option<Result<(modrinth::PackInfo, PathBuf), String>>,
 }
 
 struct App {
@@ -354,7 +456,6 @@ struct App {
     imports: Vec<PathBuf>,
     // profils, lancement, installation
     profile_menu: bool,
-    new_profile: String,
     launch: Option<Launch>,
     setup_open: bool,
     setup_desktop: bool,
@@ -390,6 +491,22 @@ struct App {
     splash_gone: bool,
     prev_tab: Tab,
     tab_changed: f64,
+    // profils et performances
+    edit: Option<ProfileEdit>,
+    // modpacks Modrinth
+    packs_modrinth: bool,
+    pk_query: String,
+    pk_hits: Vec<modrinth::Hit>,
+    pk_total: u64,
+    pk_loading: bool,
+    pk_gen: u64,
+    pk_err: Option<String>,
+    pk_open: Option<PackView>,
+    profile_mods: std::collections::HashMap<String, usize>,
+    machine: Option<perf::Machine>,
+    game_running: bool,
+    /// Réduire la fenêtre une fois l'écran de lancement fini.
+    minimize_after_launch: bool,
 }
 
 impl App {
@@ -419,7 +536,6 @@ impl App {
             cf_err: None,
             imports: vec![],
             profile_menu: false,
-            new_profile: String::new(),
             launch: None,
             setup_open: false,
             setup_desktop: true,
@@ -444,13 +560,26 @@ impl App {
             launching: false,
             upd: Arc::new(Mutex::new(Upd::Off)),
             toast: None,
-            fx: fx::Fx::default(),
+            fx: fx::Fx,
             logo: load_logo(&cc.egui_ctx),
             started: None,
             splash_done_at: None,
             splash_gone: std::env::var("OXYDE_TAB").is_ok(),
             prev_tab: Tab::Home,
             tab_changed: 0.0,
+            edit: None,
+            packs_modrinth: true,
+            pk_query: String::new(),
+            pk_hits: vec![],
+            pk_total: 0,
+            pk_loading: false,
+            pk_gen: 0,
+            pk_err: None,
+            pk_open: None,
+            profile_mods: Default::default(),
+            machine: None,
+            game_running: false,
+            minimize_after_launch: false,
         };
         app.setup_open = setup::should_offer() && !app.s.skip_setup;
         app.tab = match std::env::var("OXYDE_TAB").as_deref() {
@@ -467,7 +596,11 @@ impl App {
                 app.search_modrinth(&cc.egui_ctx, 0);
                 Tab::Mods
             }
-            Ok("packs") => Tab::Packs,
+            Ok("packs") => {
+                app.search_packs(&cc.egui_ctx, 0);
+                Tab::Packs
+            }
+            Ok("profiles") => Tab::Profiles,
             Ok("settings") => Tab::Settings,
             Ok("setup") => {
                 app.setup_open = true;
@@ -493,7 +626,21 @@ impl App {
                 app.search_modrinth(&cc.egui_ctx, 0);
             }
         }
+        if let Ok(slug) = std::env::var("OXYDE_DEMO_PACK") {
+            app.tab = Tab::Packs;
+            app.open_mrpack(&cc.egui_ctx, modrinth::Hit { slug: slug.clone(), title: slug, author: String::new(), downloads: 0, icon_url: None, categories: vec![] });
+        }
+        if std::env::var("OXYDE_DEMO_LAUNCH").is_ok() {
+            app.play(&cc.egui_ctx, None);
+        }
+        if std::env::var("OXYDE_DEMO_EDIT").is_ok() {
+            app.edit = Some(ProfileEdit { id: None, name: "Survie entre potes".into(), color: 2, image: None, confirm_delete: false, busy: false });
+        }
         app.refresh_library();
+        {
+            let dir = main_game_dir();
+            app.spawn(&cc.egui_ctx, move || Msg::Machine(perf::detect(&dir)));
+        }
         app.load_registry(&cc.egui_ctx);
         app.refresh_launcher(&cc.egui_ctx);
         if app.s.auto_update {
@@ -559,11 +706,27 @@ impl App {
     }
 
     fn profile_name(&self) -> String {
-        match self.profile() {
-            Some(p) if p.kind == "default" => "Horizon (principal)".into(),
-            Some(p) => p.name.clone(),
-            None => "Horizon".into(),
+        self.profile().map(profile_label).unwrap_or_else(|| "Horizon".into())
+    }
+
+    /// Vignette d'un profil : son image, sinon un dégradé à sa couleur avec son initiale.
+    fn avatar(&self, ui: &mut egui::Ui, r: egui::Rect, p: &engine::Instance, radius: f32) {
+        if let Some(img) = self.s.profile_images.get(&p.id).filter(|f| f.exists()) {
+            ui.put(r, egui::Image::new(format!("file://{}", img.display())).fit_to_exact_size(r.size()).maintain_aspect_ratio(false).corner_radius(radius));
+            return;
         }
+        let c = profile_color(profile_color_index(p));
+        fx::rounded_gradient(ui.painter(), r, radius, c, fx::darken(c, 0.45));
+        let initial = profile_label(p).chars().next().unwrap_or('H').to_uppercase().to_string();
+        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, initial, egui::FontId::new(r.height() * 0.48, theme::heavy()), Color32::WHITE);
+    }
+
+    fn open_editor(&mut self, p: Option<&engine::Instance>) {
+        self.profile_menu = false;
+        self.edit = Some(match p {
+            Some(p) => ProfileEdit { id: Some(p.id.clone()), name: p.name.clone(), color: profile_color_index(p), image: self.s.profile_images.get(&p.id).cloned(), confirm_delete: false, busy: false },
+            None => ProfileEdit { id: None, name: String::new(), color: self.profiles().len() % PROFILE_COLORS.len(), image: None, confirm_delete: false, busy: false },
+        });
     }
 
     fn game_dir(&self) -> PathBuf {
@@ -643,6 +806,20 @@ impl App {
         self.spawn(ctx, move || Msg::Modrinth { gen, offset, result: modrinth::search(&q, offset) });
     }
 
+    fn search_packs(&mut self, ctx: &egui::Context, offset: u64) {
+        self.pk_loading = true;
+        self.pk_err = None;
+        self.pk_gen += 1;
+        let (gen, q) = (self.pk_gen, self.pk_query.clone());
+        self.spawn(ctx, move || Msg::MrPacks { gen, offset, result: modrinth::search_packs(&q, offset) });
+    }
+
+    fn open_mrpack(&mut self, ctx: &egui::Context, hit: modrinth::Hit) {
+        let slug = hit.slug.clone();
+        self.pk_open = Some(PackView { hit, state: None });
+        self.spawn(ctx, move || Msg::MrPackOpened { result: modrinth::open_pack(&slug), slug });
+    }
+
     fn check_updates(&self, ctx: egui::Context) {
         if update::REPO.is_none() {
             return;
@@ -662,6 +839,7 @@ impl App {
 
     fn refresh_library(&mut self) {
         self.library = game::scan(&self.game_dir());
+        self.profile_mods = self.profiles().iter().map(|p| (p.id.clone(), game::scan(&p.home).iter().filter(|m| m.enabled).count())).collect();
     }
 
     fn is_installed(&self, id: &str) -> bool {
@@ -836,18 +1014,83 @@ impl App {
                         Err(e) => self.cf_err = Some(e),
                     }
                 }
-                Msg::ProfileCreated(r) => match r {
-                    Ok(i) => {
-                        let id = i.id.clone();
-                        self.instances.push(i);
-                        self.select_profile(id);
-                        self.refresh_launcher(ctx);
-                    }
-                    Err(e) => self.toast = Some((format!("Profil non créé : {e}"), false)),
-                },
                 Msg::SetupDone(r) => {
                     self.setup_busy = false;
                     self.setup_state = Some(r);
+                }
+                Msg::LaunchPrep(changes, gpu, mods) => {
+                    if let Some(l) = &mut self.launch {
+                        l.prep = Some((changes, gpu, mods));
+                    }
+                }
+                Msg::Game(on) => self.game_running = on,
+                Msg::GameEnded(crash) => {
+                    self.game_running = false;
+                    // Oxyde revient au premier plan quand on quitte le jeu
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    if let Some(why) = crash {
+                        self.toast = Some((why, false));
+                    }
+                    self.refresh_launcher(ctx);
+                }
+                Msg::ProfileSaved(r) => match r {
+                    Ok((id, image, created)) => {
+                        match image {
+                            Some(img) => self.s.profile_images.insert(id.clone(), img),
+                            None => self.s.profile_images.remove(&id),
+                        };
+                        self.edit = None;
+                        if created {
+                            self.s.profile = Some(id);
+                            self.toast = Some(("Profil créé. Ajoute-lui des mods avec « Ajouter des mods ».".into(), true));
+                        } else {
+                            self.toast = Some(("Profil enregistré.".into(), true));
+                        }
+                        self.refresh_launcher(ctx);
+                    }
+                    Err(e) => {
+                        if let Some(ed) = &mut self.edit {
+                            ed.busy = false;
+                        }
+                        self.toast = Some((format!("Profil : {e}"), false));
+                    }
+                },
+                Msg::ProfileDeleted(r) => match r {
+                    Ok(id) => {
+                        self.s.profile_images.remove(&id);
+                        if self.s.profile.as_ref() == Some(&id) {
+                            self.s.profile = None;
+                        }
+                        self.instances.retain(|i| i.id != id);
+                        self.edit = None;
+                        self.toast = Some(("Profil supprimé (son dossier est dans la Corbeille).".into(), true));
+                        self.refresh_launcher(ctx);
+                    }
+                    Err(e) => self.toast = Some((format!("Suppression : {e}"), false)),
+                },
+                Msg::Machine(m) => self.machine = Some(m),
+                Msg::MrPacks { gen, .. } if gen != self.pk_gen => {}
+                Msg::MrPacks { offset, result, .. } => {
+                    self.pk_loading = false;
+                    match result {
+                        Ok(r) => {
+                            if offset == 0 {
+                                self.pk_hits = r.hits;
+                            } else {
+                                self.pk_hits.extend(r.hits);
+                            }
+                            self.pk_total = r.total_hits;
+                        }
+                        Err(e) => self.pk_err = Some(e),
+                    }
+                }
+                Msg::MrPackOpened { slug, result } => {
+                    if let Some(v) = &mut self.pk_open {
+                        if v.hit.slug == slug {
+                            v.state = Some(result);
+                        }
+                    }
                 }
             }
         }
@@ -860,17 +1103,70 @@ impl App {
             _ => self.profile_name(),
         };
         let instance = instance.or_else(|| self.profile().map(|p| p.id.clone()));
-        // pendant la visite guidée (trailer), on ne lance jamais le vrai jeu
-        if std::env::var("OXYDE_TOUR").is_ok() {
-            self.launch = Some(Launch { name, started: now, result: None, done_at: None });
+        if self.game_running {
+            self.toast = Some(("Horizon est déjà lancé.".into(), true));
             return;
         }
+        // pendant la visite guidée (trailer), on ne lance jamais le vrai jeu
+        if std::env::var("OXYDE_TOUR").is_ok() || std::env::var("OXYDE_DEMO_LAUNCH").is_ok() {
+            self.launch = Some(Launch { name, id: instance, started: now, prep: None, result: None, done_at: None });
+            let tx = self.tx.clone();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(700));
+                let _ = tx.send(Msg::LaunchPrep(vec!["distance de rendu 64 → 10 chunks".into(), "images par seconde plafonnées à 60".into()], "Intel(R) UHD Graphics".into(), 4));
+                ctx.request_repaint();
+            });
+            return;
+        }
+        let game_dir = instance.as_ref().and_then(|id| self.instances.iter().find(|i| &i.id == id)).map(|i| i.home.clone()).unwrap_or_else(|| self.game_dir());
         self.launcher = game::launcher_exe();
         match self.launcher.clone() {
             Some(exe) => {
                 self.launching = true;
-                self.launch = Some(Launch { name, started: now, result: None, done_at: None });
-                self.spawn(ctx, move || Msg::Launched(engine::Engine { exe }.play(instance.as_deref())));
+                self.minimize_after_launch = self.s.minimize_on_play;
+                self.launch = Some(Launch { name, id: instance.clone(), started: now, prep: None, result: None, done_at: None });
+                let optimize = self.s.optimize;
+                let tx = self.tx.clone();
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let send = |m: Msg| {
+                        let _ = tx.send(m);
+                        ctx.request_repaint();
+                    };
+                    let machine = perf::detect(&game_dir);
+                    let changes = if optimize { perf::optimize(&game_dir, &machine) } else { vec![] };
+                    let mods = game::scan(&game_dir).iter().filter(|m| m.enabled).count();
+                    send(Msg::LaunchPrep(changes, machine.gpu.clone(), mods));
+                    let since = std::time::SystemTime::now();
+                    let r = engine::Engine { exe }.play(instance.as_deref());
+                    let ok = r.is_ok();
+                    send(Msg::Launched(r));
+                    if !ok {
+                        return;
+                    }
+                    // attendre que le jeu apparaisse, puis qu'il se ferme
+                    let mut seen = false;
+                    for _ in 0..90 {
+                        if perf::game_running() {
+                            seen = true;
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                    if !seen {
+                        return;
+                    }
+                    send(Msg::Game(true));
+                    while perf::game_running() {
+                        std::thread::sleep(std::time::Duration::from_secs(4));
+                    }
+                    let crash = perf::last_crash(&game_dir, since);
+                    if crash.is_some() && optimize {
+                        perf::optimize(&game_dir, &perf::Machine { tier: perf::Tier::Light, ..machine });
+                    }
+                    send(Msg::GameEnded(crash));
+                });
             }
             None => self.toast = Some(("Le launcher Horizon n'est pas installé : clique sur « Installer Horizon » dans l'accueil.".into(), false)),
         }
@@ -881,6 +1177,7 @@ impl App {
             self.tab = match tab {
                 "mods" => Tab::Mods,
                 "packs" => Tab::Packs,
+                "profiles" => Tab::Profiles,
                 "settings" => Tab::Settings,
                 _ => Tab::Home,
             };
@@ -949,7 +1246,7 @@ impl App {
         let mut profile_pill = egui::Rect::NOTHING;
         egui::TopBottomPanel::top("topbar")
             .exact_height(64.0)
-            .frame(egui::Frame::NONE.fill(Color32::from_rgba_premultiplied(10, 10, 14, 240)).stroke(egui::Stroke::new(1.0_f32, theme::LINE)))
+            .frame(egui::Frame::NONE.fill(Color32::from_rgb(22, 21, 18)).stroke(egui::Stroke::new(1.0_f32, theme::LINE)))
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
                 let drag = ui.interact(rect, egui::Id::new("topbar_drag"), egui::Sense::click_and_drag());
@@ -973,7 +1270,7 @@ impl App {
                         for what in [2u8, 1, 0] {
                             let (r, resp) = ui.allocate_exact_size(egui::vec2(44.0, 64.0), egui::Sense::click());
                             if resp.hovered() {
-                                ui.painter().rect_filled(r, 0.0, if what == 2 { Color32::from_rgb(196, 43, 28) } else { Color32::from_rgb(32, 32, 40) });
+                                ui.painter().rect_filled(r, 0.0, if what == 2 { Color32::from_rgb(196, 43, 28) } else { Color32::from_rgb(46, 43, 38) });
                             }
                             let c = r.center();
                             let st = egui::Stroke::new(1.2_f32, theme::TEXT);
@@ -999,8 +1296,14 @@ impl App {
                         }
                         ui.add_space(12.0);
                         // jouer
-                        let label = if self.launching { "Lancement…" } else { "▶  Jouer" };
-                        let r = theme::primary_sized(ui, label, egui::vec2(if compact { 96.0 } else { 116.0 }, 40.0), 15.0, !self.launching);
+                        let label = if self.launching {
+                            "Lancement…"
+                        } else if self.game_running {
+                            "En jeu"
+                        } else {
+                            "▶  Jouer"
+                        };
+                        let r = theme::primary_sized(ui, label, egui::vec2(if compact { 96.0 } else { 116.0 }, 40.0), 15.0, !self.launching && !self.game_running);
                         tour::mark(ui, "top_play", r.rect);
                         if r.clicked() {
                             self.play(ui.ctx(), None);
@@ -1013,12 +1316,13 @@ impl App {
                         let (r, resp) = ui.allocate_exact_size(egui::vec2(w, 40.0), egui::Sense::click());
                         profile_pill = r;
                         let hov = ui.ctx().animate_bool_with_time(resp.id, resp.hovered() || self.profile_menu, 0.12);
-                        ui.painter().rect_filled(r, 12.0, theme::SURFACE2);
-                        ui.painter().rect_stroke(r, 12.0, egui::Stroke::new(1.0_f32, if hov > 0.5 { Color32::from_rgb(90, 70, 70) } else { theme::LINE }), egui::StrokeKind::Inside);
+                        ui.painter().rect_filled(r, 4.0, theme::SURFACE2);
+                        ui.painter().rect_stroke(r, 4.0, egui::Stroke::new(1.0_f32, if hov > 0.5 { Color32::from_rgb(92, 84, 72) } else { theme::LINE }), egui::StrokeKind::Inside);
                         let av = egui::Rect::from_min_size(r.min + egui::vec2(6.0, 6.0), egui::vec2(28.0, 28.0));
-                        fx::rounded_gradient(ui.painter(), av, 8.0, theme::ACCENT_A, theme::ACCENT_B);
-                        let initial = name.chars().next().unwrap_or('H').to_uppercase().to_string();
-                        ui.painter().text(av.center(), egui::Align2::CENTER_CENTER, initial, egui::FontId::new(14.0, theme::heavy()), Color32::WHITE);
+                        match self.profile().cloned() {
+                            Some(p) => self.avatar(ui, av, &p, 3.0),
+                            None => fx::rounded_gradient(ui.painter(), av, 4.0, theme::ACCENT_A, theme::ACCENT_B),
+                        }
                         let clip = egui::Rect::from_min_max(egui::pos2(av.right() + 8.0, r.top()), egui::pos2(r.right() - 22.0, r.bottom()));
                         ui.painter().with_clip_rect(clip).galley(egui::pos2(clip.left(), r.center().y - galley.size().y / 2.0), galley, theme::TEXT);
                         let chev = egui::pos2(r.right() - 13.0, r.center().y);
@@ -1032,7 +1336,13 @@ impl App {
                             ui.spacing_mut().item_spacing.x = 2.0;
                             let running = self.tasks.lock().unwrap().iter().filter(|t| t.state == TaskState::Running).count();
                             let mods_label = if running > 0 { format!("Mods · {running}") } else { "Mods".to_string() };
-                            let tabs = [(Tab::Home, "Accueil", "nav:home"), (Tab::Mods, mods_label.as_str(), "nav:mods"), (Tab::Packs, "Modpacks", "nav:packs"), (Tab::Settings, "Réglages", "nav:settings")];
+                            let tabs = [
+                                (Tab::Home, "Accueil", "nav:home"),
+                                (Tab::Profiles, "Profils", "nav:profiles"),
+                                (Tab::Mods, mods_label.as_str(), "nav:mods"),
+                                (Tab::Packs, "Modpacks", "nav:packs"),
+                                (Tab::Settings, "Réglages", "nav:settings"),
+                            ];
                             for (t, label, key) in tabs {
                                 let sel = self.tab == t;
                                 let galley = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::new(14.0, theme::semi()), theme::TEXT);
@@ -1040,7 +1350,7 @@ impl App {
                                 tour::mark(ui, key, r);
                                 let hov = ui.ctx().animate_bool_with_time(resp.id, resp.hovered() || sel, 0.12);
                                 if hov > 0.0 {
-                                    ui.painter().rect_filled(r, 10.0, Color32::from_rgba_unmultiplied(255, 255, 255, ((if sel { 12.0 } else { 7.0 }) * hov) as u8));
+                                    ui.painter().rect_filled(r, 4.0, Color32::from_rgba_unmultiplied(255, 255, 255, ((if sel { 12.0 } else { 7.0 }) * hov) as u8));
                                 }
                                 if sel {
                                     let bar = egui::Rect::from_center_size(egui::pos2(r.center().x, r.bottom() + 9.0), egui::vec2(r.width() - 18.0, 3.0));
@@ -1063,36 +1373,31 @@ impl App {
     fn ui_profile_menu(&mut self, ctx: &egui::Context, anchor: egui::Rect) {
         let mut pick = None;
         let mut create = false;
+        let mut manage = false;
         let pos = egui::pos2((anchor.right() - 280.0).max(8.0), anchor.bottom() + 8.0);
         let area = egui::Area::new(egui::Id::new("profiles")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(theme::SURFACE)
                 .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-                .corner_radius(16.0)
+                .corner_radius(4.0)
                 .inner_margin(12.0)
-                .shadow(egui::Shadow { offset: [0, 10], blur: 30, spread: 0, color: Color32::from_black_alpha(160) })
+                .shadow(egui::Shadow { offset: [5, 5], blur: 0, spread: 0, color: Color32::from_black_alpha(110) })
                 .show(ui, |ui| {
                     ui.set_width(280.0);
                     ui.label(theme::label_caps("Profils"));
                     let current = self.profile().map(|p| p.id.clone());
-                    for p in self.profiles() {
-                        let (label, sub) = match p.kind.as_str() {
-                            "default" => ("Horizon".to_string(), "profil principal"),
-                            "port" => (p.name.clone(), "modpack porté"),
-                            _ => (p.name.clone(), "profil"),
-                        };
+                    let list: Vec<engine::Instance> = self.profiles().into_iter().cloned().collect();
+                    for p in &list {
+                        let label = profile_label(p);
+                        let n = self.profile_mods.get(&p.id).copied().unwrap_or(0);
+                        let sub = format!("{} · {n} mod(s)", if p.kind == "port" { "modpack porté" } else if p.kind == "default" { "profil principal" } else { "profil" });
                         let sel = current.as_ref() == Some(&p.id);
                         let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
                         if sel || resp.hovered() {
-                            ui.painter().rect_filled(r, 10.0, if sel { theme::SURFACE2 } else { Color32::from_rgb(22, 22, 29) });
+                            ui.painter().rect_filled(r, 4.0, if sel { theme::SURFACE2 } else { Color32::from_rgb(30, 29, 25) });
                         }
                         let av = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(28.0, 28.0));
-                        if sel {
-                            fx::rounded_gradient(ui.painter(), av, 8.0, theme::ACCENT_A, theme::ACCENT_B);
-                        } else {
-                            ui.painter().rect_filled(av, 8.0, Color32::from_rgb(40, 40, 52));
-                        }
-                        ui.painter().text(av.center(), egui::Align2::CENTER_CENTER, label.chars().next().unwrap_or('?').to_uppercase().to_string(), egui::FontId::new(13.0, theme::heavy()), Color32::WHITE);
+                        self.avatar(ui, av, p, 3.0);
                         ui.painter().text(egui::pos2(av.right() + 10.0, r.top() + 14.0), egui::Align2::LEFT_CENTER, &label, egui::FontId::new(14.0, theme::semi()), theme::TEXT);
                         ui.painter().text(egui::pos2(av.right() + 10.0, r.top() + 31.0), egui::Align2::LEFT_CENTER, sub, egui::FontId::proportional(11.5), theme::SUBTLE);
                         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -1102,9 +1407,11 @@ impl App {
                     ui.separator();
                     if self.launcher.is_some() {
                         ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.new_profile).hint_text("Nom du nouveau profil").desired_width(170.0).margin(egui::vec2(10.0, 7.0)));
-                            if theme::primary_sized(ui, "Créer", egui::vec2(0.0, 32.0), 13.5, !self.new_profile.trim().is_empty()).clicked() && !self.new_profile.trim().is_empty() {
+                            if theme::primary_sized(ui, "+ Nouveau profil", egui::vec2(140.0, 32.0), 13.5, true).clicked() {
                                 create = true;
+                            }
+                            if ui.button("Gérer les profils").clicked() {
+                                manage = true;
                             }
                         });
                     } else {
@@ -1120,10 +1427,11 @@ impl App {
             self.select_profile(id);
         }
         if create {
-            let name = self.new_profile.trim().to_string();
-            self.new_profile.clear();
-            let exe = self.launcher.clone().unwrap();
-            self.spawn(ctx, move || Msg::ProfileCreated(engine::Engine { exe }.create_instance(&name)));
+            self.open_editor(None);
+        }
+        if manage {
+            self.profile_menu = false;
+            self.tab = Tab::Profiles;
         }
     }
 
@@ -1203,10 +1511,11 @@ impl App {
         let hero_h = (ui.available_height() * 0.36).clamp(210.0, 300.0);
         let (hero, _) = ui.allocate_exact_size(egui::vec2(w, hero_h), egui::Sense::hover());
         let p = ui.painter_at(hero.expand(30.0));
-        p.rect_filled(hero.translate(egui::vec2(0.0, 10.0)), 22.0, Color32::from_black_alpha(90));
-        fx::rounded_gradient(&p, hero, 22.0, Color32::from_rgb(52, 22, 22), Color32::from_rgb(12, 12, 17));
+        p.rect_filled(hero.translate(egui::vec2(0.0, 10.0)), 4.0, Color32::from_black_alpha(90));
+        fx::rounded_gradient(&p, hero, 4.0, theme::SURFACE, theme::SURFACE);
+        p.rect_filled(egui::Rect::from_min_size(hero.min, egui::vec2(4.0, hero.height())), 0.0, theme::ACCENT_A);
         fx::soft_glow(&p, hero.right_center() - egui::vec2(w * 0.22, 0.0), 260.0, Color32::from_rgba_unmultiplied(230, 110, 40, 70));
-        p.rect_stroke(hero, 20.0, egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 160, 100, 40)), egui::StrokeKind::Inside);
+        p.rect_stroke(hero, 4.0, egui::Stroke::new(1.0_f32, theme::LINE), egui::StrokeKind::Inside);
         let s = (hero.height() / 15.0).min(22.0);
         fx::diorama(&p, hero.right_center() - egui::vec2(w * 0.2, s * 0.6), s, t);
 
@@ -1214,7 +1523,7 @@ impl App {
         ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(inner.min, egui::vec2(inner.width() * 0.58, inner.height()))), |ui| {
             ui.label(theme::label_caps("Horizon · Minecraft Rust Edition"));
             ui.label(theme::heading("Minecraft, réécrit en Rust.", 38.0));
-            ui.label(RichText::new("Tes mods, tes modpacks et le jeu, au même endroit.").size(16.0).color(Color32::from_rgb(210, 200, 195)));
+            ui.label(RichText::new("Tes mods, tes modpacks et le jeu, au même endroit.").size(16.0).color(Color32::from_rgb(190, 182, 168)));
             ui.add_space(18.0);
             ui.horizontal(|ui| {
                 let label = if self.launching { "Lancement…" } else { "▶   Jouer" };
@@ -1253,37 +1562,34 @@ impl App {
         });
 
         // ---- tes profils, prêts à lancer
-        let profiles: Vec<(String, String, String)> = self
-            .profiles()
-            .into_iter()
-            .map(|p| {
-                let (name, sub) = match p.kind.as_str() {
-                    "default" => ("Horizon".to_string(), "Profil principal".to_string()),
-                    "port" => (p.name.clone(), "Modpack porté".to_string()),
-                    _ => (p.name.clone(), "Profil".to_string()),
-                };
-                (p.id.clone(), name, sub)
-            })
-            .collect();
+        let profiles: Vec<engine::Instance> = self.profiles().into_iter().take(4).cloned().collect();
         if !profiles.is_empty() {
-            section(ui, "Tes profils");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                section(ui, "Tes profils");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Gérer les profils").clicked() {
+                        self.tab = Tab::Profiles;
+                    }
+                });
+            });
             let mut launch = None;
             let n = profiles.len().clamp(1, 4);
             ui.columns(n, |cols| {
-                for (col, (id, name, sub)) in cols.iter_mut().zip(profiles.iter()) {
+                for (col, p) in cols.iter_mut().zip(profiles.iter()) {
                     surface(col, 14, |ui| {
                         ui.horizontal(|ui| {
                             let (r, _) = ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::hover());
-                            fx::rounded_gradient(ui.painter(), r, 11.0, theme::ACCENT_A, theme::ACCENT_B);
-                            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, name.chars().next().unwrap_or('?').to_uppercase().to_string(), egui::FontId::new(17.0, theme::heavy()), Color32::WHITE);
+                            self.avatar(ui, r, p, 3.0);
                             ui.vertical(|ui| {
-                                ui.add(egui::Label::new(RichText::new(name).family(theme::semi()).color(theme::TEXT)).truncate());
-                                ui.label(RichText::new(sub).small().color(MUTED));
+                                ui.add(egui::Label::new(RichText::new(profile_label(p)).family(theme::semi()).color(theme::TEXT)).truncate());
+                                let n = self.profile_mods.get(&p.id).copied().unwrap_or(0);
+                                ui.label(RichText::new(format!("{n} mod(s) · {}", played(p.played_secs))).small().color(MUTED));
                             });
                         });
                         ui.add_space(4.0);
                         if theme::primary(ui, "▶  Jouer", egui::vec2(ui.available_width(), 34.0)).clicked() {
-                            launch = Some(id.clone());
+                            launch = Some(p.id.clone());
                         }
                     });
                 }
@@ -1308,13 +1614,13 @@ impl App {
                 let busy = running.contains(&format!("h:{}", p.id));
                 surface(col, 14, |ui| {
                     if let Some(u) = p.icon.as_deref().filter(|u| u.starts_with("https://")) {
-                        ui.add(egui::Image::new(u).fit_to_exact_size(egui::vec2(72.0, 72.0)).corner_radius(14.0));
+                        ui.add(egui::Image::new(u).fit_to_exact_size(egui::vec2(72.0, 72.0)).corner_radius(4.0));
                     }
                     ui.add_space(4.0);
                     ui.label(RichText::new(&p.name).size(16.0).family(theme::semi()).color(Color32::WHITE));
                     let sum: String = p.summary.chars().take(70).collect();
                     ui.label(RichText::new(sum).small().color(MUTED));
-                    ui.label(RichText::new(format!("⬇ {}", fmt_num(p.downloads.unwrap_or(0)))).small().color(Color32::from_rgb(200, 140, 100)));
+                    ui.label(RichText::new(format!("⬇ {}", fmt_num(p.downloads.unwrap_or(0)))).small().color(theme::SUBTLE));
                     ui.add_space(4.0);
                     if installed {
                         ui.label(RichText::new("✔ Installé").color(GREEN));
@@ -1336,7 +1642,7 @@ impl App {
     }
 
     fn ui_mods(&mut self, ui: &mut egui::Ui) {
-        title(ui, "Mods", "À gauche, les mods Java. Clique sur Installer : Oxyde les porte pour Horizon, ils arrivent à droite.");
+        title(ui, "Mods", &format!("À gauche, les mods Java. Clique sur Installer : Oxyde les porte pour Horizon et les met dans le profil « {} ».", self.profile_name()));
         let gap = 14.0;
         let total = ui.available_width();
         let left = ((total - gap) * 0.55).floor();
@@ -1390,7 +1696,7 @@ impl App {
                     .hint_text("Rechercher un mod…")
                     .desired_width(ui.available_width())
                     .margin(egui::vec2(12.0, 8.0))
-                    .background_color(Color32::from_rgb(31, 33, 38)),
+                    .background_color(Color32::from_rgb(15, 14, 12)),
             );
             go |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         });
@@ -1682,7 +1988,7 @@ impl App {
                     ui.selectable_value(&mut self.kind, k.to_string(), if k == "all" { "Tout" } else { registry::kind_label(k) });
                 }
             });
-            ui.add(egui::TextEdit::singleline(&mut self.cat_query).hint_text("Filtrer le catalogue…").desired_width(ui.available_width()).margin(egui::vec2(12.0, 8.0)).background_color(Color32::from_rgb(31, 33, 38)));
+            ui.add(egui::TextEdit::singleline(&mut self.cat_query).hint_text("Filtrer le catalogue…").desired_width(ui.available_width()).margin(egui::vec2(12.0, 8.0)).background_color(Color32::from_rgb(15, 14, 12)));
         });
         let q = self.cat_query.to_lowercase();
         let mut list: Vec<&registry::Project> = idx
@@ -1728,7 +2034,19 @@ impl App {
     }
 
     fn ui_packs(&mut self, ui: &mut egui::Ui) {
-        title(ui, "Modpacks", "Un pote t'envoie un modpack ? Glisse-le ici : Oxyde télécharge, porte et installe tout.");
+        title(ui, "Modpacks", "Ouvre les modpacks de Modrinth, regarde ce qu'ils contiennent, installe-les. Ou glisse celui d'un pote.");
+        let sel = if self.packs_modrinth { 0 } else { 1 };
+        if let Some(i) = theme::pills(ui, &["Modrinth", "Mes modpacks"], sel, "pk:") {
+            self.packs_modrinth = i == 0;
+            if self.packs_modrinth && self.pk_hits.is_empty() {
+                self.search_packs(ui.ctx(), 0);
+            }
+        }
+        ui.add_space(10.0);
+        if self.packs_modrinth {
+            self.ui_modrinth_packs(ui);
+            return;
+        }
         drop_zone(ui, "Glisse un modpack ici", ".oxypack (Oxyde), .mrpack (Modrinth) ou .zip (CurseForge)");
         ui.horizontal(|ui| {
             if ui.button("Choisir un modpack…").clicked() {
@@ -1796,11 +2114,176 @@ impl App {
             }
         });
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.pack_name).desired_width(220.0).margin(egui::vec2(10.0, 7.0)).background_color(Color32::from_rgb(31, 33, 38)));
+            ui.add(egui::TextEdit::singleline(&mut self.pack_name).desired_width(220.0).margin(egui::vec2(10.0, 7.0)).background_color(Color32::from_rgb(15, 14, 12)));
             if ui.add_enabled(!self.pack_pick.is_empty(), egui::Button::new(RichText::new(format!("Créer ({} mods)", self.pack_pick.len())).color(Color32::WHITE)).fill(RUST)).clicked() {
                 self.save_pack();
             }
         });
+    }
+
+    fn ui_modrinth_packs(&mut self, ui: &mut egui::Ui) {
+        if self.pk_hits.is_empty() && !self.pk_loading && self.pk_err.is_none() {
+            self.search_packs(ui.ctx(), 0);
+        }
+        ui.horizontal(|ui| {
+            let te = ui.add(egui::TextEdit::singleline(&mut self.pk_query).hint_text("Rechercher un modpack Modrinth…").desired_width(ui.available_width() - 60.0).margin(egui::vec2(12.0, 8.0)));
+            let go = ui.add_sized(egui::vec2(46.0, 34.0), egui::Button::new("🔍")).clicked();
+            if go || (te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                self.search_packs(ui.ctx(), 0);
+            }
+        });
+        ui.label(RichText::new("Horizon porte ce qu'il peut de chaque mod (blocs, objets, recettes, textures) ; le code Java des mods ne tourne pas. Ouvre un modpack pour voir ce qu'il contient.").small().color(MUTED));
+        ui.add_space(6.0);
+        if let Some(e) = &self.pk_err {
+            ui.label(RichText::new(e).color(RED));
+        }
+        let mut open = None;
+        let busy: Vec<String> = self.tasks.lock().unwrap().iter().filter(|t| t.state == TaskState::Running).map(|t| t.key.clone()).collect();
+        for h in &self.pk_hits {
+            let installing = busy.iter().any(|k| k.contains(&h.slug));
+            let sub = format!("{} · ⬇ {}", h.author, fmt_num(h.downloads));
+            let badge = h.categories.iter().find(|c| matches!(c.as_str(), "fabric" | "forge" | "neoforge" | "quilt")).map(|s| s.as_str()).unwrap_or("");
+            if row(ui, h.icon_url.as_deref(), &h.title, &sub, badge, if installing { RowAction::Busy } else { RowAction::Button("Ouvrir") }) {
+                open = Some(h.clone());
+            }
+        }
+        if self.pk_loading {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new("Recherche sur Modrinth…").color(MUTED));
+            });
+        } else if (self.pk_hits.len() as u64) < self.pk_total && !self.pk_hits.is_empty() && ui.button("Voir plus").clicked() {
+            let n = self.pk_hits.len() as u64;
+            self.search_packs(ui.ctx(), n);
+        }
+        if let Some(h) = open {
+            self.open_mrpack(ui.ctx(), h);
+        }
+    }
+
+    /// Fenêtre d'un modpack Modrinth : version, chargeur, liste des mods, installation.
+    fn ui_pack_view(&mut self, ctx: &egui::Context) {
+        let Some(v) = &self.pk_open else { return };
+        let screen = ctx.screen_rect();
+        let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let mut install: Option<PathBuf> = None;
+        let mut retry = false;
+        egui::Area::new(egui::Id::new("pack_view")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+            let bg = ui.allocate_rect(screen, egui::Sense::click());
+            ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(170));
+            let card = egui::Rect::from_center_size(screen.center(), egui::vec2(640.0, 620.0).min(screen.size() - egui::vec2(32.0, 32.0)));
+            ui.painter().rect_filled(card.translate(egui::vec2(6.0, 6.0)), theme::R, Color32::from_black_alpha(120));
+            ui.painter().rect_filled(card, theme::R, theme::SURFACE);
+            ui.painter().rect_stroke(card, theme::R, egui::Stroke::new(1.0_f32, theme::LINE), egui::StrokeKind::Inside);
+            if bg.clicked() && !card.contains(ctx.input(|i| i.pointer.interact_pos().unwrap_or_default())) {
+                close = true;
+            }
+            ui.scope_builder(egui::UiBuilder::new().max_rect(card.shrink(24.0)).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+                ui.horizontal(|ui| {
+                    match v.hit.icon_url.as_deref().filter(|u| u.starts_with("https://")) {
+                        Some(u) => {
+                            ui.add(egui::Image::new(u).fit_to_exact_size(egui::vec2(64.0, 64.0)).corner_radius(theme::R));
+                        }
+                        None => {
+                            let (r, _) = ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
+                            ui.painter().rect_filled(r, theme::R, theme::SURFACE2);
+                        }
+                    }
+                    ui.vertical(|ui| {
+                        ui.label(theme::label_caps("Modpack Modrinth"));
+                        ui.add(egui::Label::new(theme::heading(&v.hit.title, 24.0)).truncate());
+                        if !v.hit.author.is_empty() {
+                            ui.label(RichText::new(format!("par {} · ⬇ {}", v.hit.author, fmt_num(v.hit.downloads))).color(MUTED));
+                        }
+                    });
+                });
+                ui.add_space(12.0);
+                match &v.state {
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(RichText::new("Téléchargement et lecture du modpack…").color(MUTED));
+                        });
+                    }
+                    Some(Err(e)) => {
+                        ui.label(RichText::new(format!("Impossible d'ouvrir ce modpack : {e}")).color(RED));
+                        if ui.button("Réessayer").clicked() {
+                            retry = true;
+                        }
+                    }
+                    Some(Ok((info, path))) => {
+                        let mut facts: Vec<String> = [("Version", &info.version), ("Minecraft", &info.minecraft), ("Chargeur", &info.loader)]
+                            .iter()
+                            .filter(|(_, v)| !v.is_empty())
+                            .map(|(k, v)| format!("{k} {v}"))
+                            .collect();
+                        facts.push(format!("{} mods", info.mods.len()));
+                        if info.resource_packs > 0 {
+                            facts.push(format!("{} packs de ressources", info.resource_packs));
+                        }
+                        if info.shaders > 0 {
+                            facts.push(format!("{} shaders", info.shaders));
+                        }
+                        ui.add(egui::Label::new(RichText::new(facts.join("   ·   ")).family(theme::semi()).color(Color32::from_rgb(230, 160, 120))).wrap());
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("Ce qu'il contient").family(theme::semi()).color(theme::TEXT));
+                        let list_h = (ui.available_height() - 120.0).max(80.0);
+                        let list_w = ui.available_width() - 22.0;
+                        egui::Frame::NONE.fill(Color32::from_rgb(21, 20, 18)).stroke(egui::Stroke::new(1.0_f32, theme::LINE)).corner_radius(theme::R).inner_margin(10.0).show(ui, |ui| {
+                            ui.set_width(list_w);
+                            egui::ScrollArea::vertical().max_height(list_h).max_width(list_w).auto_shrink([false, true]).show(ui, |ui| {
+                                ui.set_max_width(list_w);
+                                let cols = 2;
+                                egui::Grid::new("pack_mods").num_columns(cols).spacing(egui::vec2(18.0, 6.0)).show(ui, |ui| {
+                                    for (i, m) in info.mods.iter().enumerate() {
+                                        ui.label(RichText::new(format!("•  {m}")).color(Color32::from_rgb(210, 204, 193)));
+                                        if i % cols == cols - 1 {
+                                            ui.end_row();
+                                        }
+                                    }
+                                });
+                            });
+                        });
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new("Installer : Oxyde donne le modpack au launcher Horizon, qui télécharge chaque mod et porte ce qui peut l'être. Le modpack devient un profil à part, prêt à jouer.")
+                                .small()
+                                .color(MUTED),
+                        );
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if theme::primary_sized(ui, "Installer pour Horizon", egui::vec2(220.0, 42.0), 15.0, self.launcher.is_some()).clicked() {
+                                install = Some(path.clone());
+                            }
+                            if ui.add(egui::Button::new("Fermer").min_size(egui::vec2(90.0, 42.0))).clicked() {
+                                close = true;
+                            }
+                        });
+                    }
+                }
+                if v.state.as_ref().is_none_or(|r| r.is_err()) {
+                    ui.add_space(8.0);
+                    if ui.button("Fermer").clicked() {
+                        close = true;
+                    }
+                }
+            });
+        });
+        if retry {
+            let hit = v.hit.clone();
+            self.open_mrpack(ctx, hit);
+            return;
+        }
+        if let Some(p) = install {
+            self.pk_open = None;
+            self.install_pack(ctx, p);
+            self.packs_modrinth = false;
+            self.toast = Some(("Installation lancée : suis-la dans Activité. Le modpack apparaîtra dans « Mes modpacks » et dans tes profils.".into(), true));
+            return;
+        }
+        if close {
+            self.pk_open = None;
+        }
     }
 
     fn save_pack(&mut self) {
@@ -1859,7 +2342,7 @@ impl App {
                         let short: String = line.chars().take(110).collect();
                         ui.add(egui::Label::new(RichText::new(short).color(match t.state {
                             TaskState::Failed => RED,
-                            TaskState::Done => Color32::from_rgb(200, 202, 210),
+                            TaskState::Done => Color32::from_rgb(210, 204, 193),
                             TaskState::Running => MUTED,
                         })).truncate());
                     });
@@ -1896,6 +2379,33 @@ impl App {
                     open_folder(&self.game_dir());
                 }
             });
+        });
+        surface(ui, 14, |ui| {
+            ui.label(RichText::new("Performances").family(theme::semi()).color(Color32::WHITE));
+            match &self.machine {
+                Some(m) => ui.label(
+                    RichText::new(format!(
+                        "Carte graphique : {} ({})",
+                        m.gpu,
+                        if m.tier == perf::Tier::Light { "puce intégrée : réglages légers" } else { "carte dédiée" }
+                    ))
+                    .color(MUTED),
+                ),
+                None => ui.label(RichText::new("Détection de la carte graphique…").color(MUTED)),
+            };
+            ui.checkbox(&mut self.s.optimize, "Optimiser le jeu pour ce PC avant chaque partie (recommandé : évite les plantages « mémoire vidéo pleine »)");
+            ui.checkbox(&mut self.s.minimize_on_play, "Réduire Oxyde pendant la partie, et le rouvrir quand tu quittes le jeu");
+            ui.checkbox(&mut self.s.animations, "Animations du fond d'Oxyde");
+            if ui.button("Optimiser ce profil maintenant").clicked() {
+                let dir = self.game_dir();
+                let m = self.machine.clone().unwrap_or_else(|| perf::detect(&dir));
+                let c = perf::optimize(&dir, &m);
+                self.toast = Some(if c.is_empty() {
+                    ("Ce profil est déjà réglé pour ton PC.".into(), true)
+                } else {
+                    (format!("Optimisé : {}.", c.join(", ")), true)
+                });
+            }
         });
         surface(ui, 14, |ui| {
             ui.label(RichText::new("CurseForge (bêta)").family(theme::semi()).color(Color32::WHITE));
@@ -1975,10 +2485,10 @@ impl App {
         egui::Area::new(egui::Id::new("toast")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -24.0)).show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(theme::SURFACE2)
-                .stroke(egui::Stroke::new(1.0_f32, if ok { Color32::from_rgb(40, 90, 70) } else { Color32::from_rgb(110, 50, 50) }))
-                .corner_radius(14.0)
+                .stroke(egui::Stroke::new(1.0_f32, if ok { Color32::from_rgb(60, 120, 100) } else { Color32::from_rgb(130, 60, 50) }))
+                .corner_radius(4.0)
                 .inner_margin(egui::Margin::symmetric(16, 10))
-                .shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(150) })
+                .shadow(egui::Shadow { offset: [5, 5], blur: 0, spread: 0, color: Color32::from_black_alpha(110) })
                 .show(ui, |ui| {
                     ui.set_max_width((screen.width() - 120.0).min(720.0));
                     ui.horizontal(|ui| {
@@ -2002,9 +2512,9 @@ impl App {
             egui::Frame::NONE
                 .fill(theme::SURFACE)
                 .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-                .corner_radius(16.0)
+                .corner_radius(4.0)
                 .inner_margin(12.0)
-                .shadow(egui::Shadow { offset: [0, 8], blur: 26, spread: 0, color: Color32::from_black_alpha(160) })
+                .shadow(egui::Shadow { offset: [5, 5], blur: 0, spread: 0, color: Color32::from_black_alpha(110) })
                 .show(ui, |ui| {
                     let w = if self.tasks_open { 420.0 } else { 220.0 };
                     ui.set_width(w);
@@ -2038,11 +2548,12 @@ impl App {
         });
     }
 
-    // ------------------------------------------------------------ écran de lancement
+    // ------------------------------------------------------------ écran de lancement : OXYDE × HORIZON
     fn ui_launch(&mut self, ctx: &egui::Context, now: f64) {
+        let demo = std::env::var("OXYDE_TOUR").is_ok() || std::env::var("OXYDE_DEMO_LAUNCH").is_ok();
         let Some(l) = &mut self.launch else { return };
         let t = (now - l.started) as f32;
-        if std::env::var("OXYDE_TOUR").is_ok() && l.result.is_none() && t > 1.8 {
+        if demo && l.result.is_none() && t > 2.6 {
             l.result = Some(Ok(()));
         }
         if l.result.is_some() && l.done_at.is_none() {
@@ -2050,69 +2561,147 @@ impl App {
         }
         let ok = matches!(l.result, Some(Ok(())));
         let since_done = l.done_at.map(|d| (now - d) as f32).unwrap_or(0.0);
-        let fade_in = (t / 0.3).clamp(0.0, 1.0);
-        let fade_out = if ok { 1.0 - ((since_done - 2.2) / 0.4).clamp(0.0, 1.0) } else { 1.0 };
+        let hold = if std::env::var("OXYDE_SHOT").is_ok() { 60.0 } else { 2.4 };
+        let fade_in = (t / 0.35).clamp(0.0, 1.0);
+        let fade_out = if ok { 1.0 - ((since_done - hold) / 0.45).clamp(0.0, 1.0) } else { 1.0 };
         let alpha = fade_in * fade_out;
         if alpha <= 0.0 {
             self.launch = None;
+            if ok && self.minimize_after_launch && !demo {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+            self.minimize_after_launch = false;
             return;
         }
-        let (name, result) = (l.name.clone(), l.result.clone());
+        let (name, id, prep, result) = (l.name.clone(), l.id.clone(), l.prep.clone(), l.result.clone());
+        let inst = id.as_ref().and_then(|id| self.instances.iter().find(|i| &i.id == id)).cloned().or_else(|| self.profile().cloned());
+        let name = inst.as_ref().filter(|i| !i.id.starts_with("port:") || id.is_some()).map(profile_label).unwrap_or(name);
+
+        // étapes : profil, optimisation, mods, démarrage
+        let s1 = t > 0.35;
+        let s2 = s1 && prep.is_some() && t > 0.8;
+        let s3 = s2 && t > 1.25;
+        let s4 = ok;
+        let mut raw = 0.06 + if s1 { 0.18 } else { 0.0 } + if s2 { 0.22 } else { 0.0 } + if s3 { 0.14 } else { 0.0 };
+        if s4 {
+            raw = 1.0;
+        } else if s3 {
+            raw += 0.32 * (1.0 - (-(t - 1.25) / 5.0).exp());
+        }
+        let progress = ctx.animate_value_with_time(egui::Id::new("launch_p"), raw, 0.5);
+
         let mut close = false;
         let mut open_launcher = false;
         let screen = ctx.screen_rect();
         egui::Area::new(egui::Id::new("launch")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
             ui.allocate_rect(screen, egui::Sense::click());
             ui.multiply_opacity(alpha);
-            let p = ui.painter();
-            p.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(10, 10, 13, 225));
-            let c = screen.center() - egui::vec2(0.0, 150.0);
-            fx::soft_glow(p, c, 260.0, Color32::from_rgba_unmultiplied(255, 100, 60, 55));
-            fx::diorama(p, c, 18.0, now as f32);
-            let col = egui::Rect::from_center_size(screen.center() + egui::vec2(0.0, 130.0), egui::vec2(420.0, 230.0));
-            ui.scope_builder(egui::UiBuilder::new().max_rect(col), |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("LANCEMENT").size(12.0).family(theme::semi()).color(Color32::from_rgb(240, 160, 110)));
-                    ui.label(RichText::new(&name).size(26.0).family(theme::semi()).color(Color32::WHITE));
-                    ui.add_space(10.0);
-                });
-                let step = |ui: &mut egui::Ui, done: bool, active: bool, text: &str| {
-                    ui.horizontal(|ui| {
-                        ui.add_space(90.0);
-                        if done {
-                            ui.label(RichText::new("✔").color(GREEN));
-                        } else if active {
-                            ui.spinner();
-                        } else {
-                            ui.label(RichText::new("·").color(MUTED));
-                        }
-                        ui.label(RichText::new(text).color(if done || active { Color32::WHITE } else { MUTED }));
-                    });
-                };
-                step(ui, t > 0.4, t <= 0.4, "Profil prêt");
-                step(ui, t > 0.9, (0.4..=0.9).contains(&t), "Mods vérifiés");
-                match &result {
-                    None => step(ui, false, t > 0.9, "Démarrage de Horizon"),
-                    Some(Ok(())) => step(ui, true, false, "Horizon est lancé · bon jeu !"),
-                    Some(Err(e)) => {
-                        ui.horizontal(|ui| {
-                            ui.add_space(90.0);
-                            ui.label(RichText::new("✖").color(RED));
-                            ui.label(RichText::new("Horizon n'a pas démarré").color(RED));
-                        });
-                        ui.label(RichText::new(e).small().color(MUTED));
-                        ui.horizontal(|ui| {
-                            ui.add_space(90.0);
-                            if ui.button("Ouvrir le launcher Horizon").clicked() {
-                                open_launcher = true;
-                            }
-                            if ui.button("Fermer").clicked() {
-                                close = true;
-                            }
-                        });
-                    }
+            let p = ui.painter().clone();
+            let tt = now as f32;
+            p.rect_filled(screen, 0.0, theme::BG);
+            // deux lueurs : la rouille d'Oxyde, le bleu froid de Horizon
+            fx::soft_glow(&p, screen.center() + egui::vec2(-screen.width() * 0.22, -60.0 + (tt * 0.7).sin() * 14.0), 420.0, Color32::from_rgba_unmultiplied(255, 110, 40, 46));
+            fx::soft_glow(&p, screen.center() + egui::vec2(screen.width() * 0.22, -40.0 + (tt * 0.6).cos() * 14.0), 420.0, Color32::from_rgba_unmultiplied(80, 120, 255, 34));
+
+            let top = screen.center().y - 190.0;
+            fx::lockup(&p, egui::pos2(screen.center().x, top), 1.0, 1.0, Some(&self.logo), tt);
+            fx::spaced(&p, egui::pos2(screen.center().x, top + 52.0), egui::Align2::CENTER_CENTER, "LANCÉ PAR OXYDE  ·  MOTEUR HORIZON, MINECRAFT RUST EDITION", 11.0, theme::semi(), theme::SUBTLE, 2.0);
+
+            // carte du profil
+            let card = egui::Rect::from_center_size(egui::pos2(screen.center().x, top + 132.0), egui::vec2(480.0, 84.0));
+            p.rect_filled(card.translate(egui::vec2(0.0, 8.0)), 4.0, Color32::from_black_alpha(90));
+            p.rect_filled(card, 4.0, theme::SURFACE);
+            p.rect_stroke(card, 4.0, egui::Stroke::new(1.0_f32, theme::LINE), egui::StrokeKind::Inside);
+            let av = egui::Rect::from_min_size(card.min + egui::vec2(14.0, 14.0), egui::vec2(56.0, 56.0));
+            match &inst {
+                Some(i) => self.avatar(ui, av, i, 3.0),
+                None => fx::rounded_gradient(&p, av, 4.0, theme::ACCENT_A, theme::ACCENT_B),
+            }
+            p.text(egui::pos2(av.right() + 16.0, card.top() + 30.0), egui::Align2::LEFT_CENTER, &name, egui::FontId::new(21.0, theme::semi()), Color32::WHITE);
+            let sub = match &prep {
+                Some((_, gpu, mods)) => format!("{mods} mod(s) actif(s)  ·  {gpu}"),
+                None => "préparation du profil…".into(),
+            };
+            p.text(egui::pos2(av.right() + 16.0, card.top() + 56.0), egui::Align2::LEFT_CENTER, sub, egui::FontId::proportional(13.0), theme::SUBTLE);
+
+            // barre de progression en dégradé, avec un reflet qui glisse
+            let bar = egui::Rect::from_center_size(egui::pos2(screen.center().x, card.bottom() + 34.0), egui::vec2(480.0, 6.0));
+            p.rect_filled(bar, 3.0, Color32::from_rgb(52, 49, 43));
+            let fill = egui::Rect::from_min_size(bar.min, egui::vec2((bar.width() * progress).max(6.0), bar.height()));
+            fx::rounded_gradient(&p, fill, 3.0, theme::ACCENT_A, theme::ACCENT_B);
+            if !s4 {
+                let sx = fill.left() + ((tt * 0.7) % 1.0) * fill.width();
+                fx::soft_glow(&p, egui::pos2(sx, bar.center().y), 26.0, Color32::from_rgba_unmultiplied(255, 220, 190, 120));
+            }
+
+            // étapes
+            let opt_text = match &prep {
+                Some((c, _, _)) if c.is_empty() => "Réglages déjà adaptés à ton PC".to_string(),
+                Some((c, _, _)) => format!("Optimisé pour ton PC : {}", c.join(", ")),
+                None if !self.s.optimize => "Optimisation désactivée".to_string(),
+                None => "Optimisation pour ton PC".to_string(),
+            };
+            let mods_text = match &prep {
+                Some((_, _, n)) => format!("{n} mod(s) vérifié(s)"),
+                None => "Vérification des mods".to_string(),
+            };
+            let start_text = match &result {
+                Some(Ok(())) => "Horizon est lancé · bon jeu !".to_string(),
+                Some(Err(_)) => "Horizon n'a pas démarré".to_string(),
+                None => "Démarrage de Horizon".to_string(),
+            };
+            let steps = [
+                (s1, !s1, format!("Profil « {name} » prêt")),
+                (s2, s1 && !s2, opt_text),
+                (s3, s2 && !s3, mods_text),
+                (s4, s3 && result.is_none(), start_text),
+            ];
+            let mut y = bar.bottom() + 30.0;
+            let x = bar.left() + 4.0;
+            for (i, (done, active, text)) in steps.iter().enumerate() {
+                let c = egui::pos2(x + 8.0, y);
+                let failed = i == 3 && matches!(result, Some(Err(_)));
+                if failed {
+                    p.circle_filled(c, 8.0, RED);
+                    p.text(c, egui::Align2::CENTER_CENTER, "!", egui::FontId::new(11.0, theme::heavy()), Color32::WHITE);
+                } else if *done {
+                    p.circle_filled(c, 8.0, theme::ACCENT_B);
+                    p.line(vec![c + egui::vec2(-3.5, 0.0), c + egui::vec2(-1.0, 2.6), c + egui::vec2(3.8, -2.8)], egui::Stroke::new(1.8_f32, Color32::WHITE));
+                } else if *active {
+                    fx::spinner(&p, c, 7.0, tt, theme::ACCENT_A);
+                } else {
+                    p.circle_stroke(c, 7.0, egui::Stroke::new(1.2_f32, Color32::from_rgb(72, 68, 60)));
                 }
-            });
+                let col = if failed {
+                    RED
+                } else if *done || *active {
+                    Color32::WHITE
+                } else {
+                    Color32::from_rgb(120, 113, 102)
+                };
+                let g = p.layout(text.clone(), egui::FontId::proportional(14.0), col, bar.width() - 30.0);
+                let h = g.size().y;
+                p.galley(egui::pos2(x + 26.0, y - 9.0), g, col);
+                y += h.max(18.0) + 14.0;
+            }
+
+            if let Some(Err(e)) = &result {
+                let r = egui::Rect::from_min_size(egui::pos2(bar.left(), y), egui::vec2(bar.width(), 120.0));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+                    ui.label(RichText::new(e).color(theme::SUBTLE));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if theme::primary_sized(ui, "Ouvrir le launcher Horizon", egui::vec2(0.0, 36.0), 14.0, true).clicked() {
+                            open_launcher = true;
+                        }
+                        if ui.button("Fermer").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            }
+
+            fx::spaced(&p, screen.center_bottom() - egui::vec2(0.0, 26.0), egui::Align2::CENTER_CENTER, "OXYDE × HORIZON  ·  BY FULL_MONEY", 10.5, theme::semi(), Color32::from_rgb(100, 94, 85), 2.5);
         });
         if open_launcher {
             if let Some(exe) = &self.launcher {
@@ -2125,6 +2714,311 @@ impl App {
         }
     }
 
+    // ------------------------------------------------------------ profils
+    fn ui_profiles(&mut self, ui: &mut egui::Ui) {
+        title(ui, "Profils", "Un profil, c'est une partie à part : ses mods, ses mondes, ses réglages. Donne-lui un nom et une image, ajoute-lui des mods, lance-le.");
+        if self.launcher.is_none() {
+            ui.label(RichText::new("Installe le launcher Horizon pour créer des profils.").color(ORANGE));
+            ui.hyperlink_to("Installer Horizon (gratuit)", game::INSTALL_PAGE);
+            return;
+        }
+        enum Act {
+            Play(String),
+            Mods(String),
+            Share(String),
+            Edit(String),
+            Select(String),
+            New,
+        }
+        let mut act = None;
+        let list: Vec<engine::Instance> = self.profiles().into_iter().cloned().collect();
+        let current = self.profile().map(|p| p.id.clone());
+        let gap = 16.0;
+        let w = ui.available_width();
+        let cols = (((w + gap) / (300.0 + gap)).floor() as usize).max(1);
+        let card_w = ((w - gap * (cols - 1) as f32) / cols as f32).floor();
+        let card_h = 284.0;
+        let idx: Vec<usize> = (0..=list.len()).collect();
+        for chunk in idx.chunks(cols) {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for &i in chunk {
+                    let (r, resp) = ui.allocate_exact_size(egui::vec2(card_w, card_h), egui::Sense::click());
+                    let hov = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.15);
+                    let r = r.translate(egui::vec2(0.0, -3.0 * hov));
+                    let p = ui.painter().clone();
+                    if i == list.len() {
+                        // carte « nouveau profil »
+                        p.rect_filled(r, 4.0, if hov > 0.5 { theme::SURFACE2 } else { theme::SURFACE });
+                        let col = if hov > 0.5 { theme::ACCENT_A } else { Color32::from_rgb(80, 75, 66) };
+                        fx::dashed_rect(&p, r.shrink(1.0), 4.0, egui::Stroke::new(1.5_f32, col));
+                        let c = r.center() - egui::vec2(0.0, 18.0);
+                        p.circle_filled(c, 28.0, Color32::from_rgb(52, 49, 43));
+                        p.line_segment([c - egui::vec2(10.0, 0.0), c + egui::vec2(10.0, 0.0)], egui::Stroke::new(2.4_f32, theme::ACCENT_A));
+                        p.line_segment([c - egui::vec2(0.0, 10.0), c + egui::vec2(0.0, 10.0)], egui::Stroke::new(2.4_f32, theme::ACCENT_A));
+                        p.text(c + egui::vec2(0.0, 50.0), egui::Align2::CENTER_CENTER, "Nouveau profil", egui::FontId::new(17.0, theme::semi()), theme::TEXT);
+                        p.text(c + egui::vec2(0.0, 74.0), egui::Align2::CENTER_CENTER, "nom, image, mods à part", egui::FontId::proportional(12.5), theme::SUBTLE);
+                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            act = Some(Act::New);
+                        }
+                        continue;
+                    }
+                    let prof = &list[i];
+                    // tout le contenu de la carte vit dans un sous-espace : il ne pousse pas la grille
+                    let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::top_down(egui::Align::Min)));
+                    let ui = &mut cui;
+                    let sel = current.as_ref() == Some(&prof.id);
+                    p.rect_filled(r.translate(egui::vec2(0.0, 8.0)), 4.0, Color32::from_black_alpha((50.0 + 50.0 * hov) as u8));
+                    p.rect_filled(r, 4.0, theme::SURFACE);
+                    let border = if sel { theme::ACCENT_A } else if hov > 0.5 { Color32::from_rgb(92, 84, 72) } else { theme::LINE };
+                    p.rect_stroke(r, 4.0, egui::Stroke::new(if sel { 1.6_f32 } else { 1.0_f32 }, border), egui::StrokeKind::Inside);
+                    // couverture
+                    let cover = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(r.width() - 16.0, 112.0));
+                    match self.s.profile_images.get(&prof.id).filter(|f| f.exists()) {
+                        Some(img) => {
+                            ui.put(cover, egui::Image::new(format!("file://{}", img.display())).fit_to_exact_size(cover.size()).maintain_aspect_ratio(false).corner_radius(4.0));
+                        }
+                        None => {
+                            let c = profile_color(profile_color_index(prof));
+                            fx::rounded_gradient(&p, cover, 4.0, c, fx::darken(c, 0.25));
+                            fx::cover_pattern(&p, cover, c);
+                        }
+                    }
+                    if sel {
+                        let pill = egui::Rect::from_min_size(cover.min + egui::vec2(10.0, 10.0), egui::vec2(62.0, 22.0));
+                        p.rect_filled(pill, 4.0, Color32::from_black_alpha(150));
+                        p.text(pill.center(), egui::Align2::CENTER_CENTER, "ACTIF", egui::FontId::new(10.5, theme::heavy()), Color32::WHITE);
+                    }
+                    // vignette qui chevauche la couverture
+                    let av = egui::Rect::from_min_size(egui::pos2(cover.left() + 14.0, cover.bottom() - 30.0), egui::vec2(56.0, 56.0));
+                    p.rect_filled(av.expand(3.0), 4.0, theme::SURFACE);
+                    self.avatar(ui, av, prof, 3.0);
+                    let tx = av.right() + 12.0;
+                    let name_clip = egui::Rect::from_min_max(egui::pos2(tx, cover.bottom()), egui::pos2(r.right() - 12.0, cover.bottom() + 30.0));
+                    p.with_clip_rect(name_clip).text(egui::pos2(tx, cover.bottom() + 15.0), egui::Align2::LEFT_CENTER, profile_label(prof), egui::FontId::new(17.0, theme::semi()), Color32::WHITE);
+                    let n = self.profile_mods.get(&prof.id).copied().unwrap_or(0);
+                    let kind = match prof.kind.as_str() {
+                        "default" => "principal",
+                        "port" => "modpack porté",
+                        _ => "profil",
+                    };
+                    p.text(egui::pos2(r.left() + 22.0, av.bottom() + 18.0), egui::Align2::LEFT_CENTER, format!("{kind}  ·  {n} mod(s)  ·  {}", played(prof.played_secs)), egui::FontId::proportional(12.5), theme::SUBTLE);
+                    // boutons
+                    let inner = egui::Rect::from_min_max(egui::pos2(r.left() + 14.0, av.bottom() + 36.0), egui::pos2(r.right() - 14.0, r.bottom() - 12.0));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+                        if theme::primary_sized(ui, "▶  Jouer", egui::vec2(inner.width(), 38.0), 15.0, !self.game_running && !self.launching).clicked() {
+                            act = Some(Act::Play(prof.id.clone()));
+                        }
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let bw = ((inner.width() - 12.0) / 3.0).floor();
+                            let small = |ui: &mut egui::Ui, t: &str, tip: &str| ui.add_sized(egui::vec2(bw, 30.0), egui::Button::new(RichText::new(t).size(13.0))).on_hover_text(tip).clicked();
+                            if small(ui, "+ Mods", "Ajouter des mods dans ce profil") {
+                                act = Some(Act::Mods(prof.id.clone()));
+                            }
+                            if small(ui, "Partager", "Faire un modpack de ce profil pour tes potes") {
+                                act = Some(Act::Share(prof.id.clone()));
+                            }
+                            if small(ui, "Modifier", "Nom, image, suppression") {
+                                act = Some(Act::Edit(prof.id.clone()));
+                            }
+                        });
+                    });
+                    if act.is_none() && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !sel {
+                        act = Some(Act::Select(prof.id.clone()));
+                    }
+                }
+            });
+            ui.add_space(gap);
+        }
+        let ctx = ui.ctx().clone();
+        match act {
+            Some(Act::Play(id)) => {
+                self.s.profile = Some(id.clone());
+                self.refresh_library();
+                self.play(&ctx, Some(id));
+            }
+            Some(Act::Mods(id)) => {
+                self.select_profile(id);
+                self.tab = Tab::Mods;
+                if self.mr_hits.is_empty() {
+                    self.search_modrinth(&ctx, 0);
+                }
+            }
+            Some(Act::Share(id)) => {
+                self.select_profile(id);
+                self.pack_name = self.profile_name();
+                self.tab = Tab::Packs;
+            }
+            Some(Act::Edit(id)) => {
+                let p = self.instances.iter().find(|i| i.id == id).cloned();
+                self.open_editor(p.as_ref());
+            }
+            Some(Act::Select(id)) => self.select_profile(id),
+            Some(Act::New) => self.open_editor(None),
+            None => {}
+        }
+    }
+
+    fn ui_profile_editor(&mut self, ctx: &egui::Context) {
+        let Some(mut e) = self.edit.take() else { return };
+        let screen = ctx.screen_rect();
+        let mut keep = true;
+        let mut save = false;
+        let mut delete = false;
+        let is_default = e.id.as_ref().and_then(|id| self.instances.iter().find(|i| &i.id == id)).is_some_and(|i| i.kind == "default");
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !e.busy {
+            keep = false;
+        }
+        egui::Area::new(egui::Id::new("profile_edit")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+            let bg = ui.allocate_rect(screen, egui::Sense::click());
+            ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(170));
+            let card = egui::Rect::from_center_size(screen.center(), egui::vec2(520.0, 500.0).min(screen.size() - egui::vec2(32.0, 32.0)));
+            ui.painter().rect_filled(card.translate(egui::vec2(0.0, 14.0)), 4.0, Color32::from_black_alpha(120));
+            ui.painter().rect_filled(card, 4.0, theme::SURFACE);
+            ui.painter().rect_stroke(card, 4.0, egui::Stroke::new(1.0_f32, theme::LINE), egui::StrokeKind::Inside);
+            if bg.clicked() && !card.contains(ctx.input(|i| i.pointer.interact_pos().unwrap_or_default())) && !e.busy {
+                keep = false;
+            }
+            ui.scope_builder(egui::UiBuilder::new().max_rect(card.shrink(26.0)).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+                ui.label(theme::label_caps(if e.id.is_none() { "Nouveau profil" } else { "Modifier le profil" }));
+                ui.add_space(8.0);
+                // aperçu
+                let (cover, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 120.0), egui::Sense::hover());
+                let c = profile_color(e.color);
+                match e.image.as_ref().filter(|f| f.exists()) {
+                    Some(img) => {
+                        ui.put(cover, egui::Image::new(format!("file://{}", img.display())).fit_to_exact_size(cover.size()).maintain_aspect_ratio(false).corner_radius(4.0));
+                    }
+                    None => {
+                        fx::rounded_gradient(ui.painter(), cover, 4.0, c, fx::darken(c, 0.25));
+                        fx::cover_pattern(ui.painter(), cover, c);
+                    }
+                }
+                let shown = if e.name.trim().is_empty() { "Nom du profil" } else { e.name.trim() };
+                let p = ui.painter();
+                p.text(cover.left_bottom() + egui::vec2(18.0, -22.0), egui::Align2::LEFT_CENTER, shown, egui::FontId::new(24.0, theme::heavy()), Color32::from_black_alpha(140));
+                p.text(cover.left_bottom() + egui::vec2(16.0, -24.0), egui::Align2::LEFT_CENTER, shown, egui::FontId::new(24.0, theme::heavy()), Color32::WHITE);
+                ui.add_space(16.0);
+                ui.label(RichText::new("Nom").family(theme::semi()).color(theme::TEXT));
+                let te = ui.add(egui::TextEdit::singleline(&mut e.name).hint_text("Ex. Survie entre potes").desired_width(f32::INFINITY).margin(egui::vec2(12.0, 9.0)).char_limit(40));
+                if e.id.is_none() && !ui.ctx().memory(|m| m.has_focus(te.id)) && e.name.is_empty() {
+                    te.request_focus();
+                }
+                if te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !e.name.trim().is_empty() {
+                    save = true;
+                }
+                ui.add_space(14.0);
+                ui.label(RichText::new("Image").family(theme::semi()).color(theme::TEXT));
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for i in 0..PROFILE_COLORS.len() {
+                        let (r, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+                        let col = profile_color(i);
+                        ui.painter().circle_filled(r.center(), 13.0, col);
+                        if e.color == i && e.image.is_none() {
+                            ui.painter().circle_stroke(r.center(), 15.5, egui::Stroke::new(2.0_f32, Color32::WHITE));
+                        }
+                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            e.color = i;
+                            e.image = None;
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Choisir une image…").clicked() {
+                        if let Some(f) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"]).pick_file() {
+                            e.image = Some(f);
+                        }
+                    }
+                    if e.image.is_some() && ui.button("Retirer l'image").clicked() {
+                        e.image = None;
+                    }
+                    ui.label(RichText::new("PNG, JPG ou WebP").small().color(MUTED));
+                });
+                ui.add_space(18.0);
+                ui.horizontal(|ui| {
+                    let label = if e.busy {
+                        "Enregistrement…"
+                    } else if e.id.is_none() {
+                        "Créer le profil"
+                    } else {
+                        "Enregistrer"
+                    };
+                    if theme::primary_sized(ui, label, egui::vec2(180.0, 42.0), 15.0, !e.busy && !e.name.trim().is_empty()).clicked() {
+                        save = true;
+                    }
+                    if ui.add_enabled(!e.busy, egui::Button::new("Annuler").min_size(egui::vec2(90.0, 42.0))).clicked() {
+                        keep = false;
+                    }
+                });
+                if e.id.is_some() && !is_default {
+                    ui.add_space(12.0);
+                    if e.confirm_delete {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("Supprimer ce profil ? Son dossier (mondes, mods) part dans la Corbeille.").color(RED));
+                            if ui.button(RichText::new("Supprimer").color(RED)).clicked() {
+                                delete = true;
+                            }
+                            if ui.small_button("Non").clicked() {
+                                e.confirm_delete = false;
+                            }
+                        });
+                    } else if ui.add(egui::Button::new(RichText::new("Supprimer ce profil…").color(RED)).frame(false)).clicked() {
+                        e.confirm_delete = true;
+                    }
+                }
+            });
+        });
+        if save && !e.busy && !e.name.trim().is_empty() {
+            if let Some(exe) = self.launcher.clone() {
+                e.busy = true;
+                let (id, name, color, image) = (e.id.clone(), e.name.trim().to_string(), e.color, e.image.clone());
+                let old_name = id.as_ref().and_then(|id| self.instances.iter().find(|i| &i.id == id)).map(|i| i.name.clone());
+                self.spawn(ctx, move || {
+                    let eng = engine::Engine { exe };
+                    let r = (|| {
+                        let (id, created) = match id {
+                            Some(id) => {
+                                if old_name.as_deref() != Some(name.as_str()) {
+                                    eng.rename_instance(&id, &name)?;
+                                }
+                                (id, false)
+                            }
+                            None => (eng.create_instance(&name)?.id, true),
+                        };
+                        let _ = eng.set_icon(&id, &color_hex(color));
+                        let img = match image {
+                            Some(src) if !src.starts_with(profiles_dir()) => {
+                                let dir = profiles_dir();
+                                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                                let ext = src.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_else(|| "png".into());
+                                let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+                                let dest = dir.join(format!("{}-{stamp}.{ext}", sanitize_file(&id)));
+                                std::fs::copy(&src, &dest).map_err(|e| format!("image : {e}"))?;
+                                Some(dest)
+                            }
+                            other => other,
+                        };
+                        Ok((id, img, created))
+                    })();
+                    Msg::ProfileSaved(r)
+                });
+            }
+        }
+        if delete {
+            if let (Some(exe), Some(id)) = (self.launcher.clone(), e.id.clone()) {
+                e.busy = true;
+                self.spawn(ctx, move || Msg::ProfileDeleted(engine::Engine { exe }.delete_instance(&id).map(|_| id)));
+            }
+        }
+        if keep {
+            self.edit = Some(e);
+        }
+    }
+
     // ------------------------------------------------------------ installeur
     fn ui_setup(&mut self, ctx: &egui::Context) {
         let screen = ctx.screen_rect();
@@ -2134,16 +3028,16 @@ impl App {
         egui::Area::new(egui::Id::new("setup")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
             ui.allocate_rect(screen, egui::Sense::click());
             let p = ui.painter();
-            p.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(12, 12, 15, 245));
+            p.rect_filled(screen, 0.0, Color32::from_rgba_unmultiplied(19, 18, 16, 250));
             let card = egui::Rect::from_center_size(screen.center(), egui::vec2(640.0, 440.0).min(screen.size() - egui::vec2(40.0, 40.0)));
-            p.rect_filled(card.translate(egui::vec2(0.0, 12.0)), 26.0, Color32::from_black_alpha(110));
-            fx::rounded_gradient(p, card, 24.0, Color32::from_rgb(48, 20, 22), Color32::from_rgb(13, 13, 18));
-            p.rect_stroke(card, 24.0, egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 160, 100, 50)), egui::StrokeKind::Inside);
+            p.rect_filled(card.translate(egui::vec2(0.0, 12.0)), 4.0, Color32::from_black_alpha(110));
+            fx::rounded_gradient(p, card, 4.0, theme::SURFACE, theme::SURFACE);
+            p.rect_stroke(card, 4.0, egui::Stroke::new(1.0_f32, theme::LINE), egui::StrokeKind::Inside);
             fx::diorama(p, egui::pos2(card.right() - 130.0, card.top() + 150.0), 17.0, now);
             ui.scope_builder(egui::UiBuilder::new().max_rect(card.shrink(40.0)), |ui| {
-                ui.label(RichText::new("INSTALLATION").size(12.0).family(theme::semi()).color(Color32::from_rgb(240, 160, 110)));
+                ui.label(RichText::new("INSTALLATION").size(12.0).family(theme::semi()).color(theme::ACCENT_B));
                 ui.label(RichText::new("Bienvenue dans Oxyde").size(32.0).family(theme::semi()).color(Color32::WHITE));
-                ui.label(RichText::new("Mods, modpacks et lancement pour Horizon.").size(16.0).color(Color32::from_rgb(210, 200, 195)));
+                ui.label(RichText::new("Mods, modpacks et lancement pour Horizon.").size(16.0).color(Color32::from_rgb(190, 182, 168)));
                 ui.add_space(26.0);
                 match &self.setup_state {
                     Some(Ok(_)) => {
@@ -2200,8 +3094,8 @@ fn drop_zone(ui: &mut egui::Ui, big: &str, small: &str) {
     let hovering = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
     egui::Frame::NONE
         .stroke(egui::Stroke::new(if hovering { 2.5_f32 } else { 1.5_f32 }, if hovering { RUST } else { Color32::from_gray(70) }))
-        .corner_radius(12.0)
-        .fill(if hovering { Color32::from_rgb(45, 30, 22) } else { Color32::from_rgba_premultiplied(22, 23, 27, 235) })
+        .corner_radius(4.0)
+        .fill(if hovering { Color32::from_rgb(48, 36, 28) } else { Color32::from_rgb(27, 26, 23) })
         .inner_margin(24.0)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -2233,9 +3127,13 @@ impl eframe::App for App {
         let now = ctx.input(|i| i.time);
         let start = *self.started.get_or_insert(now);
         let elapsed = (now - start) as f32;
-        ctx.request_repaint_after(std::time::Duration::from_millis(33));
+        // Oxyde ne consomme presque rien quand il n'est pas regardé ou que le jeu tourne
+        let (focused, minimized) = ctx.input(|i| (i.viewport().focused.unwrap_or(true), i.viewport().minimized.unwrap_or(false)));
+        let showing = self.launch.is_some() || !self.splash_gone || self.tour.is_some() || std::env::var("OXYDE_SHOT").is_ok() || std::env::var("OXYDE_REC").is_ok();
+        let idle = !showing && (minimized || self.game_running || !focused || !self.s.animations);
+        ctx.request_repaint_after(std::time::Duration::from_millis(if idle { 1000 } else { 33 }));
         self_screenshot(ctx, elapsed);
-        self.fx.background(ctx, 0.55);
+        self.fx.background(ctx, if self.s.animations && !self.game_running { 0.55 } else { 0.0 });
         if self.tab != self.prev_tab {
             self.prev_tab = self.tab;
             self.tab_changed = now;
@@ -2256,6 +3154,9 @@ impl eframe::App for App {
                     egui::ScrollArea::vertical().show(ui, |ui| self.ui_home(ui));
                 }
                 Tab::Mods => self.ui_mods(ui),
+                Tab::Profiles => {
+                    egui::ScrollArea::vertical().id_salt("profiles").show(ui, |ui| self.ui_profiles(ui));
+                }
                 Tab::Packs => {
                     egui::ScrollArea::vertical().id_salt("packs").show(ui, |ui| self.ui_packs(ui));
                 }
@@ -2269,6 +3170,12 @@ impl eframe::App for App {
             let tasks_win = egui::Window::new("Activité").open(&mut open).default_size([640.0, 460.0]).collapsible(false);
             tasks_win.show(ctx, |ui| self.ui_task_list(ui, false));
             self.activity_window = open;
+        }
+        if self.edit.is_some() {
+            self.ui_profile_editor(ctx);
+        }
+        if self.pk_open.is_some() {
+            self.ui_pack_view(ctx);
         }
         self.ui_launch(ctx, now);
         if self.setup_open && self.splash_gone {
@@ -2288,18 +3195,18 @@ impl eframe::App for App {
 
         if !self.splash_gone {
             let ready = self.registry.is_some() || self.registry_err.is_some();
-            let target = 0.25 + if ready { 0.45 } else { 0.0 } + if elapsed > 1.3 { 0.30 } else { 0.0 };
+            let target = 0.25 + if ready { 0.45 } else { 0.0 } + if elapsed > 0.8 { 0.30 } else { 0.0 };
             let progress = ctx.animate_value_with_time(egui::Id::new("splash_p"), target, 0.45);
             let status = if elapsed < 0.4 {
                 "démarrage"
             } else if !ready {
                 "lecture du registre horizon"
-            } else if elapsed < 1.3 {
+            } else if elapsed < 0.8 {
                 "recherche du jeu"
             } else {
                 "prêt"
             };
-            if self.splash_done_at.is_none() && ((ready && elapsed > 1.7) || elapsed > 4.0) {
+            if self.splash_done_at.is_none() && ((ready && elapsed > 1.1) || elapsed > 3.0) {
                 self.splash_done_at = Some(now);
             }
             let alpha = match self.splash_done_at {

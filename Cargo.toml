@@ -1,6 +1,6 @@
 [package]
 name = "oxyde"
-version = "3.0.2"
+version = "3.1.0"
 edition = "2021"
 description = "Magasin de mods, convertisseur de mods Java et lanceur pour Horizon (Minecraft Rust Edition)."
 license = "MIT"
@@ -24,7 +24,7 @@ sha1 = "0.10"
 self-replace = "1"
 semver = "1"
 dirs = "6"
-egui_extras = { version = "0.31", features = ["http", "image"] }
+egui_extras = { version = "0.31", features = ["http", "image", "file"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 
 [target.'cfg(windows)'.build-dependencies]
