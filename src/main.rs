@@ -191,6 +191,8 @@ struct Settings {
     profile: Option<String>,
     cf_key: String,
     skip_setup: bool,
+    /// Mods Modrinth que Horizon a refusés (slug -> raison) : ils ne sont plus proposés à l'installation.
+    not_portable: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -204,6 +206,7 @@ impl Default for Settings {
             profile: None,
             cf_key: String::new(),
             skip_setup: false,
+            not_portable: Default::default(),
         }
     }
 }
@@ -733,6 +736,14 @@ impl App {
                     self.refresh_library();
                 }
                 Msg::TaskDone => {
+                    // retenir les mods que Horizon refuse, pour ne plus proposer de les installer
+                    for t in self.tasks.lock().unwrap().iter() {
+                        if t.state == TaskState::Failed && t.result.starts_with(installer::NOT_PORTABLE) {
+                            if let Some(slug) = t.key.strip_prefix("m:") {
+                                self.s.not_portable.insert(slug.to_string(), t.result.clone());
+                            }
+                        }
+                    }
                     self.refresh_library();
                     self.refresh_launcher(ctx);
                 }
@@ -1341,19 +1352,33 @@ impl App {
                     continue;
                 }
                 let done = port.is_some_and(|p| self.is_installed(&p.id)) || self.launcher_mods.iter().any(|e| e.slug == h.slug) || self.is_installed(&convert::sanitize_id(&h.slug));
+                let refused = self.s.not_portable.get(&h.slug);
                 let action = if done {
                     RowAction::Done
                 } else if self.is_busy(&format!("m:{}", h.slug)) {
                     RowAction::Busy
                 } else if code_only {
                     RowAction::Info("code seulement")
+                } else if refused.is_some() {
+                    RowAction::Info("non portable")
                 } else {
                     RowAction::Install
                 };
-                let badge = if port.is_some() { "version Horizon" } else if code_only { "" } else { "portable" };
+                let badge = if port.is_some() {
+                    "version Horizon"
+                } else if code_only || refused.is_some() {
+                    ""
+                } else {
+                    "portable"
+                };
                 let sub = format!("{} · ⬇ {}", h.author, fmt_num(h.downloads));
+                let before = ui.cursor().min.y;
                 if row(ui, h.icon_url.as_deref(), &h.title, &sub, badge, action) {
                     install = Some(h.clone());
+                }
+                if let Some(why) = refused {
+                    let r = egui::Rect::from_min_max(egui::pos2(ui.min_rect().left(), before), egui::pos2(ui.min_rect().right(), ui.cursor().min.y));
+                    ui.interact(r, egui::Id::new(("why", &h.slug)), egui::Sense::hover()).on_hover_text(why.as_str());
                 }
             }
             if self.mr_loading {
@@ -1735,7 +1760,6 @@ impl App {
         }
         if !compact {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Activité").size(18.0).family(theme::semi()).color(Color32::WHITE));
                 if ui.small_button("Effacer les terminées").clicked() {
                     self.tasks.lock().unwrap().retain(|t| t.state == TaskState::Running);
                 }

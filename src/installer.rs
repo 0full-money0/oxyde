@@ -50,6 +50,23 @@ pub struct Outcome {
     pub details: Vec<String>,
 }
 
+/// Début du message quand Horizon refuse un mod : l'app s'en sert pour ne plus proposer de l'installer.
+pub const NOT_PORTABLE: &str = "Non portable : ";
+
+/// Traduit les refus du launcher Horizon en explication claire.
+pub fn why_not(summary: &str) -> String {
+    let s = summary.to_lowercase();
+    if s.contains("can't be carried over") && s.contains("mod id") {
+        "ce fichier n'est pas un mod classique mais un « chargeur » qui télécharge son vrai code au lancement de Minecraft Java (comme Essential). Il n'y a rien dedans que Horizon puisse utiliser.".into()
+    } else if s.contains("nothing to port") || s.contains("everything it does is java code") {
+        "tout ce que fait ce mod est du code Java (aucun bloc, objet, texture ou recette à reprendre), et Horizon n'exécute pas le code Java.".into()
+    } else if s.contains("doesn't run") {
+        format!("Horizon ne peut pas le faire tourner ({summary}).")
+    } else {
+        summary.to_string()
+    }
+}
+
 #[derive(Clone)]
 pub struct Ctx {
     pub index: Option<Arc<registry::Index>>,
@@ -136,7 +153,7 @@ fn java(slug: &str, title: &str, local: Option<&Path>, ctx: &Ctx, log: &mut dyn 
                     details,
                 });
             }
-            Ok(c) => return Err(format!("{} : {}", if c.name.is_empty() { title } else { &c.name }, c.summary)),
+            Ok(c) => return Err(format!("{NOT_PORTABLE}{}", why_not(&c.summary))),
             Err(e) => log(&format!("Pas de portage officiel ({e}). Conversion par Oxyde.")),
         }
     }
