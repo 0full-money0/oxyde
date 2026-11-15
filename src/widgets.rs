@@ -15,6 +15,7 @@ pub const BORDER: Color32 = Color32::from_rgb(44, 46, 53);
 pub const MUTED: Color32 = Color32::from_rgb(150, 154, 165);
 
 pub fn self_screenshot(ctx: &egui::Context, elapsed: f32) {
+    record(ctx, elapsed);
     let Ok(path) = std::env::var("OXYDE_SHOT") else { return };
     let at: f32 = std::env::var("OXYDE_SHOT_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(5.0);
     let asked = egui::Id::new("shot_asked");
@@ -36,6 +37,52 @@ pub fn self_screenshot(ctx: &egui::Context, elapsed: f32) {
         }
         std::process::exit(0);
     }
+}
+
+/// Enregistrement vidéo (pour le trailer) : OXYDE_REC=<dossier>, OXYDE_REC_FROM et OXYDE_REC_SECS en secondes.
+/// Chaque image est enregistrée avec son horodatage (ms) ; ffmpeg en fait une vidéo à vitesse réelle.
+fn record(ctx: &egui::Context, elapsed: f32) {
+    let Ok(dir) = std::env::var("OXYDE_REC") else { return };
+    let from: f32 = std::env::var("OXYDE_REC_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let secs: f32 = std::env::var("OXYDE_REC_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(5.0);
+    ctx.request_repaint();
+    if elapsed >= from && elapsed <= from + secs {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(((elapsed - from) * 1000.0) as u64)));
+    }
+    let shots: Vec<(u64, std::sync::Arc<egui::ColorImage>)> = ctx.input(|i| {
+        i.raw
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::Screenshot { image, user_data, .. } => {
+                    let ms = user_data.data.as_ref().and_then(|d| d.downcast_ref::<u64>()).copied().unwrap_or(0);
+                    Some((ms, image.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    });
+    for (ms, img) in shots {
+        let dir = dir.clone();
+        std::thread::spawn(move || {
+            let [w, h] = img.size;
+            let bytes: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+            if let Some(buf) = image::RgbaImage::from_raw(w as u32, h as u32, bytes) {
+                let _ = image::DynamicImage::ImageRgba8(buf).to_rgb8().save(format!("{dir}/f{ms:07}.bmp"));
+            }
+        });
+    }
+    if elapsed > from + secs + 1.0 {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        std::process::exit(0);
+    }
+}
+
+/// Défilement automatique pendant un enregistrement (OXYDE_REC_SCROLL = pixels par seconde).
+pub fn rec_scroll(elapsed: f32) -> Option<f32> {
+    let speed: f32 = std::env::var("OXYDE_REC_SCROLL").ok()?.parse().ok()?;
+    let from: f32 = std::env::var("OXYDE_REC_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    Some(((elapsed - from).max(0.0)) * speed)
 }
 
 pub fn load_logo(ctx: &egui::Context) -> egui::TextureHandle {
@@ -172,7 +219,9 @@ pub fn segment(ui: &mut egui::Ui, selected: bool, label: &str) -> bool {
         .stroke(egui::Stroke::new(1.0_f32, if selected { RUST } else { BORDER }))
         .corner_radius(18.0)
         .min_size(egui::vec2(0.0, 34.0));
-    ui.add(b).clicked()
+    let r = ui.add(b);
+    crate::tour::mark(ui, &format!("seg:{label}"), r.rect);
+    r.clicked()
 }
 
 pub fn fmt_num(n: u64) -> String {

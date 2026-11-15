@@ -9,6 +9,7 @@ mod modrinth;
 mod net;
 mod pack;
 mod registry;
+mod tour;
 mod update;
 mod widgets;
 
@@ -29,15 +30,28 @@ fn main() -> eframe::Result<()> {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Oxyde")
-            .with_inner_size([1120.0, 740.0])
+            .with_inner_size(window_size())
             .with_min_inner_size([820.0, 540.0])
             .with_decorations(false) // barre de titre dessinée par Oxyde
             .with_transparent(true)
             .with_drag_and_drop(true)
             .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).unwrap_or_default()),
+        // une taille imposée (enregistrement) ne doit pas être remplacée par celle de la dernière session
+        persist_window: std::env::var("OXYDE_SIZE").is_err(),
         ..Default::default()
     };
     eframe::run_native("Oxyde", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+}
+
+/// Taille de la fenêtre au démarrage (OXYDE_SIZE=1440x900 pour les enregistrements).
+fn window_size() -> [f32; 2] {
+    std::env::var("OXYDE_SIZE")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some([w.parse().ok()?, h.parse().ok()?])
+        })
+        .unwrap_or([1120.0, 740.0])
 }
 
 /// Ligne de commande :
@@ -97,8 +111,9 @@ fn cli(args: &[String]) -> Option<i32> {
 /// Dossier de jeu de l'instance principale (celle du launcher Horizon, sinon le dossier par défaut).
 fn main_game_dir() -> PathBuf {
     if let Some(e) = engine::Engine::find() {
-        if let Some(i) = e.instances().into_iter().find(|i| i.kind == "default").or_else(|| e.instances().into_iter().find(|i| i.selected)) {
-            return i.home;
+        let list = e.instances().unwrap_or_default();
+        if let Some(i) = list.iter().find(|i| i.kind == "default").or_else(|| list.iter().find(|i| i.selected)) {
+            return i.home.clone();
         }
     }
     game::default_game_dir()
@@ -144,7 +159,7 @@ fn install_pack_file(path: &Path, ctx: &installer::Ctx, log: &mut dyn FnMut(&str
     let engine = engine::Engine { exe: launcher };
     log("Import du modpack par Horizon…");
     let id = engine.import_pack(path, &mut |l| log(l))?;
-    let pack = engine.packs().into_iter().find(|p| p.pack == id);
+    let pack = engine.packs().unwrap_or_default().into_iter().find(|p| p.pack == id);
     let msg = pack.as_ref().map(|p| format!("{} mod(s) portés sur {}", p.ported_mods, p.portable)).unwrap_or_default();
     Ok((
         Some(format!("port:{id}")),
@@ -226,7 +241,7 @@ type PackParts = (Vec<pack::Entry>, Vec<(String, Vec<u8>)>);
 enum Msg {
     Registry(Result<registry::Index, String>),
     Modrinth { offset: u64, result: Result<modrinth::SearchResp, String> },
-    Launcher { instances: Vec<engine::Instance>, mods: Vec<engine::InstalledEntry>, packs: Vec<engine::PortedPack> },
+    Launcher { instances: Option<Vec<engine::Instance>>, mods: Option<Vec<engine::InstalledEntry>>, packs: Option<Vec<engine::PortedPack>> },
     TaskDone,
     Launched(Result<(), String>),
 }
@@ -239,6 +254,7 @@ struct App {
     registry: Option<Arc<registry::Index>>,
     registry_err: Option<String>,
     // launcher Horizon
+    tour: Option<tour::Tour>,
     launcher: Option<PathBuf>,
     instances: Vec<engine::Instance>,
     launcher_mods: Vec<engine::InstalledEntry>,
@@ -286,6 +302,7 @@ impl App {
             rx,
             registry: None,
             registry_err: None,
+            tour: tour::Tour::from_env(),
             launcher: game::launcher_exe(),
             instances: vec![],
             launcher_mods: vec![],
@@ -341,7 +358,32 @@ impl App {
     }
 
     fn add_demo_task(&mut self, title: &str) {
-        self.tasks.lock().unwrap().push(Task {
+        let mut t = self.tasks.lock().unwrap();
+        t.push(Task {
+            title: "mcw-roofs-2.3.3.jar".into(),
+            state: TaskState::Done,
+            lines: vec![],
+            result: "Porté par Horizon · porté en partie et activé · Macaw's Roofs 2.3.3".into(),
+            outcomes: vec![],
+            key: String::new(),
+        });
+        t.push(Task {
+            title: "AppleSkin".into(),
+            state: TaskState::Done,
+            lines: vec![],
+            result: "Version Horizon officielle · AppleSkin 0.1.3 installé".into(),
+            outcomes: vec![],
+            key: String::new(),
+        });
+        t.push(Task {
+            title: "Supplementaries".into(),
+            state: TaskState::Running,
+            lines: vec!["Analyse par le launcher Horizon…".into()],
+            result: String::new(),
+            outcomes: vec![],
+            key: String::new(),
+        });
+        t.push(Task {
             title: title.into(),
             state: TaskState::Done,
             lines: vec!["Identification du mod…".into(), "Analyse par le launcher Horizon…".into()],
@@ -400,7 +442,7 @@ impl App {
         let Some(exe) = self.launcher.clone() else { return };
         self.spawn(ctx, move || {
             let e = engine::Engine { exe };
-            Msg::Launcher { instances: e.instances(), mods: e.installed(None), packs: e.packs() }
+            Msg::Launcher { instances: e.instances(), mods: e.installed(), packs: e.packs() }
         });
     }
 
@@ -545,9 +587,16 @@ impl App {
                     }
                 }
                 Msg::Launcher { instances, mods, packs } => {
-                    self.instances = instances;
-                    self.launcher_mods = mods;
-                    self.packs = packs;
+                    // une réponse manquante ne vide jamais ce qui est affiché
+                    if let Some(i) = instances {
+                        self.instances = i;
+                    }
+                    if let Some(m) = mods {
+                        self.launcher_mods = m;
+                    }
+                    if let Some(p) = packs {
+                        self.packs = p;
+                    }
                     self.refresh_library();
                 }
                 Msg::TaskDone => {
@@ -566,6 +615,11 @@ impl App {
     }
 
     fn play(&mut self, ctx: &egui::Context, instance: Option<String>) {
+        // pendant la visite guidée (trailer), on ne lance jamais le vrai jeu
+        if std::env::var("OXYDE_TOUR").is_ok() {
+            self.toast = Some(("▶ Horizon démarre…".into(), true));
+            return;
+        }
         self.launcher = game::launcher_exe();
         match self.launcher.clone() {
             Some(exe) => {
@@ -573,6 +627,31 @@ impl App {
                 self.spawn(ctx, move || Msg::Launched(engine::Engine { exe }.play(instance.as_deref())));
             }
             None => self.toast = Some(("Le launcher Horizon n'est pas installé : clique sur « Installer Horizon » dans l'accueil.".into(), false)),
+        }
+    }
+
+    fn tour_click(&mut self, ctx: &egui::Context, key: &str) {
+        if let Some(tab) = key.strip_prefix("nav:") {
+            self.tab = match tab {
+                "store" => Tab::Store,
+                "packs" => Tab::Packs,
+                "library" => Tab::Library,
+                "import" => Tab::Import,
+                "settings" => Tab::Settings,
+                _ => Tab::Home,
+            };
+            if self.tab == Tab::Store {
+                self.source = Source::Horizon;
+            }
+        } else if let Some(id) = key.strip_prefix("feat:") {
+            let name = self.registry.as_ref().and_then(|r| r.projects.iter().find(|p| p.id == id)).map(|p| p.name.clone()).unwrap_or_else(|| id.to_string());
+            self.install_target(ctx, name, format!("h:{id}"), Target::Horizon(id.to_string()));
+        } else if key == "seg:Modrinth (mods Java)" {
+            self.source = Source::Modrinth;
+            self.query = "macaw".into();
+            self.search_modrinth(ctx, 0);
+        } else if key == "pack_play" || key == "hero_play" {
+            self.play(ctx, None);
         }
     }
 
@@ -716,16 +795,17 @@ impl App {
                 });
                 ui.add_space(22.0);
                 let running = self.tasks.lock().unwrap().iter().filter(|t| t.state == TaskState::Running).count();
-                for (t, label, ic) in [
-                    (Tab::Home, "Accueil".to_string(), fx::Icon::Home),
-                    (Tab::Store, "Magasin".to_string(), fx::Icon::Store),
-                    (Tab::Packs, "Modpacks".to_string(), fx::Icon::Packs),
-                    (Tab::Library, "Mes mods".to_string(), fx::Icon::Mods),
-                    (Tab::Import, if running > 0 { format!("Importer  ·  {running}") } else { "Importer".to_string() }, fx::Icon::Import),
-                    (Tab::Settings, "Réglages".to_string(), fx::Icon::Settings),
+                for (t, label, ic, key) in [
+                    (Tab::Home, "Accueil".to_string(), fx::Icon::Home, "nav:home"),
+                    (Tab::Store, "Magasin".to_string(), fx::Icon::Store, "nav:store"),
+                    (Tab::Packs, "Modpacks".to_string(), fx::Icon::Packs, "nav:packs"),
+                    (Tab::Library, "Mes mods".to_string(), fx::Icon::Mods, "nav:library"),
+                    (Tab::Import, if running > 0 { format!("Importer  ·  {running}") } else { "Importer".to_string() }, fx::Icon::Import, "nav:import"),
+                    (Tab::Settings, "Réglages".to_string(), fx::Icon::Settings, "nav:settings"),
                 ] {
                     let sel = self.tab == t;
                     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::click());
+                    tour::mark(ui, key, rect);
                     let fill = if sel {
                         Color32::from_rgb(40, 32, 28)
                     } else if resp.hovered() {
@@ -815,7 +895,8 @@ impl App {
 
         // ---- grand bandeau : dégradé, lueur, île voxel qui flotte
         let w = ui.available_width();
-        let (hero, _) = ui.allocate_exact_size(egui::vec2(w, 300.0), egui::Sense::hover());
+        let hero_h = (ui.available_height() * 0.36).clamp(210.0, 300.0);
+        let (hero, _) = ui.allocate_exact_size(egui::vec2(w, hero_h), egui::Sense::hover());
         let p = ui.painter_at(hero.expand(30.0));
         p.rect_filled(hero.translate(egui::vec2(0.0, 10.0)), 22.0, Color32::from_black_alpha(90));
         fx::rounded_gradient(&p, hero, 20.0, Color32::from_rgb(58, 30, 18), Color32::from_rgb(16, 15, 19));
@@ -837,6 +918,7 @@ impl App {
                     .corner_radius(12.0)
                     .min_size(egui::vec2(210.0, 56.0));
                 let r = ui.add_enabled(!self.launching && launcher.is_some(), b);
+                tour::mark(ui, "hero_play", r.rect);
                 let pulse = 0.5 + 0.5 * (t * 2.2).sin();
                 fx::soft_glow(ui.painter(), r.rect.center(), 140.0, Color32::from_rgba_unmultiplied(255, 120, 40, (25.0 + 25.0 * pulse) as u8));
                 if r.clicked() {
@@ -894,8 +976,12 @@ impl App {
                         ui.label(RichText::new("✔ Installé").color(GREEN));
                     } else if busy {
                         ui.spinner();
-                    } else if ui.add(egui::Button::new(RichText::new("Installer").strong().color(Color32::WHITE)).fill(RUST).min_size(egui::vec2(ui.available_width(), 32.0))).clicked() {
-                        install = Some((p.name.clone(), p.id.clone()));
+                    } else {
+                        let b = ui.add(egui::Button::new(RichText::new("Installer").strong().color(Color32::WHITE)).fill(RUST).min_size(egui::vec2(ui.available_width(), 32.0)));
+                        tour::mark(ui, &format!("feat:{}", p.id), b.rect);
+                        if b.clicked() {
+                            install = Some((p.name.clone(), p.id.clone()));
+                        }
                     }
                 });
             }
@@ -973,7 +1059,12 @@ impl App {
         list.sort_by_key(|p| std::cmp::Reverse(p.downloads.unwrap_or(0)));
         ui.label(RichText::new(format!("{} résultat(s)", list.len())).color(MUTED));
         let mut to_install = None;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+        let elapsed = self.started.map(|s| (ui.input(|i| i.time) - s) as f32).unwrap_or(0.0);
+        if let Some(y) = rec_scroll(elapsed).or_else(|| ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::new("tour_scroll")))) {
+            area = area.vertical_scroll_offset(y);
+        }
+        area.show(ui, |ui| {
             for p in list.iter().take(self.shown) {
                 let installed = self.is_installed(&p.id);
                 let busy = self.is_busy(&format!("h:{}", p.id));
@@ -1026,9 +1117,17 @@ impl App {
         }
         let mut to_install = None;
         let mut more = false;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+        if let Some(y) = ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::new("tour_scroll"))) {
+            area = area.vertical_scroll_offset(y);
+        }
+        area.show(ui, |ui| {
+            let browsing = self.query.trim().is_empty();
             for h in &self.mr_hits {
                 let port = self.registry.as_ref().and_then(|r| r.find_port(&h.slug, &h.title));
+                if browsing && port.is_none() && h.categories.iter().any(|c| c == "library" || c == "optimization") {
+                    continue; // rien à porter : visibles seulement en cherchant leur nom
+                }
                 let installed = port.is_some_and(|p| self.is_installed(&p.id))
                     || self.launcher_mods.iter().any(|e| e.slug == h.slug)
                     || self.is_installed(&convert::sanitize_id(&h.slug));
@@ -1093,7 +1192,9 @@ impl App {
                             ui.label(RichText::new(format!("{} · {} mod(s) portés sur {}", p.summary, p.ported_mods, p.portable)).small().color(MUTED));
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add(egui::Button::new(RichText::new("▶ Jouer").strong().color(Color32::WHITE)).fill(RUST).min_size(egui::vec2(110.0, 36.0))).clicked() {
+                            let b = ui.add(egui::Button::new(RichText::new("▶ Jouer").strong().color(Color32::WHITE)).fill(RUST).min_size(egui::vec2(110.0, 36.0)));
+                            tour::mark(ui, "pack_play", b.rect);
+                            if b.clicked() {
                                 play = Some(format!("port:{}", p.pack));
                             }
                         });
@@ -1292,7 +1393,7 @@ impl App {
                 }
             });
         }
-        egui::ScrollArea::vertical().id_salt(("tasks", compact)).auto_shrink([false, !compact]).max_height(if compact { 170.0 } else { f32::INFINITY }).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt(("tasks", compact)).auto_shrink([false, !compact]).max_height(if compact { 96.0 } else { f32::INFINITY }).show(ui, |ui| {
             for (i, t) in tasks.iter().enumerate().rev() {
                 surface(ui, 10, |ui| {
                     ui.horizontal(|ui| {
@@ -1535,6 +1636,16 @@ impl eframe::App for App {
             }
         });
         self.resize_edges(ctx);
+
+        if self.splash_gone {
+            if let Some(mut tour) = self.tour.take() {
+                for key in tour.step(ctx, now) {
+                    self.tour_click(ctx, key);
+                }
+                tour.draw(ctx, now);
+                self.tour = Some(tour);
+            }
+        }
 
         if !self.splash_gone {
             let ready = self.registry.is_some() || self.registry_err.is_some();

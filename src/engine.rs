@@ -156,8 +156,17 @@ impl Engine {
         }
     }
 
+    /// Commande silencieuse, réessayée une fois (le launcher peut être occupé un instant).
     fn quiet(&self, args: &[&str], timeout: Duration) -> Result<String, String> {
-        self.run(args, timeout, &mut |_| {})
+        self.run(args, timeout, &mut |_| {}).or_else(|_| {
+            std::thread::sleep(Duration::from_millis(600));
+            self.run(args, timeout, &mut |_| {})
+        })
+    }
+
+    /// Lecture JSON : `None` si le launcher n'a pas répondu (on garde alors l'affichage précédent).
+    fn list<T: serde::de::DeserializeOwned>(&self, args: &[&str]) -> Option<Vec<T>> {
+        self.quiet(args, Duration::from_secs(60)).ok().map(|o| parse_many(&o))
     }
 
     /// Ce que la chaîne officielle peut porter d'un mod Modrinth (26.3).
@@ -185,28 +194,24 @@ impl Engine {
         self.quiet(&["mods", "remove", slug], Duration::from_secs(120))
     }
 
-    pub fn installed(&self, instance: Option<&str>) -> Vec<InstalledEntry> {
-        let mut args = vec!["mods", "list", "--json"];
-        if let Some(i) = instance {
-            args.extend(["--instance", i]);
-        }
-        self.quiet(&args, Duration::from_secs(60)).map(|o| parse_many(&o)).unwrap_or_default()
+    pub fn installed(&self) -> Option<Vec<InstalledEntry>> {
+        self.list(&["mods", "list", "--json"])
     }
 
-    pub fn instances(&self) -> Vec<Instance> {
-        self.quiet(&["instance", "list", "--json"], Duration::from_secs(60)).map(|o| parse_many(&o)).unwrap_or_default()
+    pub fn instances(&self) -> Option<Vec<Instance>> {
+        self.list(&["instance", "list", "--json"])
     }
 
-    pub fn packs(&self) -> Vec<PortedPack> {
-        self.quiet(&["modpack", "list", "--json"], Duration::from_secs(60)).map(|o| parse_many(&o)).unwrap_or_default()
+    pub fn packs(&self) -> Option<Vec<PortedPack>> {
+        self.list(&["modpack", "list", "--json"])
     }
 
     /// Importe puis porte un modpack Java (.mrpack, zip CurseForge ou dossier d'instance). Renvoie son id.
     pub fn import_pack(&self, path: &Path, line: &mut dyn FnMut(&str)) -> Result<String, String> {
-        let before: Vec<String> = self.packs().into_iter().map(|p| p.pack).collect();
+        let before: Vec<String> = self.packs().unwrap_or_default().into_iter().map(|p| p.pack).collect();
         let p = path.to_string_lossy().to_string();
         self.run(&["modpack", "import", &p], Duration::from_secs(900), line)?;
-        let after = self.packs();
+        let after = self.packs().unwrap_or_default();
         let id = after
             .iter()
             .find(|x| !before.contains(&x.pack))
