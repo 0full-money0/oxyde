@@ -209,10 +209,6 @@ pub fn install_mods(mods: &[PathBuf], game_dir: &Path) -> Result<Vec<String>, St
     Ok(ids)
 }
 
-/// Un dossier de jeu Horizon contient `options.txt` (ou déjà `horizon-mods/`).
-pub fn looks_like_game_dir(p: &Path) -> bool {
-    p.join("options.txt").is_file() || p.join("horizon-mods").is_dir()
-}
 
 #[cfg(test)]
 mod tests {

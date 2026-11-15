@@ -306,12 +306,9 @@ pub fn diorama(p: &egui::Painter, center: Pos2, s: f32, t: f32) {
 
 #[derive(Clone, Copy)]
 pub enum Icon {
-    Home,
     Store,
     Packs,
     Mods,
-    Import,
-    Settings,
 }
 
 /// Petites icônes vectorielles du menu.
@@ -319,11 +316,6 @@ pub fn icon(p: &egui::Painter, kind: Icon, c: Pos2, color: Color32) {
     let st = Stroke::new(1.8_f32, color);
     let pt = |x: f32, y: f32| c + vec2(x, y);
     match kind {
-        Icon::Home => {
-            p.add(Shape::line(vec![pt(-8.0, 0.0), pt(0.0, -7.0), pt(8.0, 0.0)], st));
-            p.add(Shape::line(vec![pt(-6.0, -1.0), pt(-6.0, 7.0), pt(6.0, 7.0), pt(6.0, -1.0)], st));
-            p.add(Shape::line(vec![pt(-2.0, 7.0), pt(-2.0, 2.0), pt(2.0, 2.0), pt(2.0, 7.0)], st));
-        }
         Icon::Store => {
             p.add(Shape::closed_line(vec![pt(-7.0, -3.0), pt(7.0, -3.0), pt(6.0, 7.0), pt(-6.0, 7.0)], st));
             p.add(Shape::line(vec![pt(-3.0, -3.0), pt(-3.0, -6.0), pt(3.0, -6.0), pt(3.0, -3.0)], st));
@@ -338,19 +330,6 @@ pub fn icon(p: &egui::Painter, kind: Icon, c: Pos2, color: Color32) {
             p.add(Shape::closed_line(vec![pt(0.0, -s), pt(w, -s * 0.5), pt(w, s * 0.5), pt(0.0, s), pt(-w, s * 0.5), pt(-w, -s * 0.5)], st));
             p.add(Shape::line(vec![pt(-w, -s * 0.5), pt(0.0, 0.0), pt(w, -s * 0.5)], st));
             p.add(Shape::line_segment([pt(0.0, 0.0), pt(0.0, s)], st));
-        }
-        Icon::Import => {
-            p.add(Shape::line_segment([pt(0.0, -8.0), pt(0.0, 3.0)], st));
-            p.add(Shape::line(vec![pt(-4.0, -1.0), pt(0.0, 3.0), pt(4.0, -1.0)], st));
-            p.add(Shape::line(vec![pt(-8.0, 3.0), pt(-8.0, 7.0), pt(8.0, 7.0), pt(8.0, 3.0)], st));
-        }
-        Icon::Settings => {
-            p.circle_stroke(c, 4.0, st);
-            for i in 0..8 {
-                let a = i as f32 * std::f32::consts::TAU / 8.0;
-                let d = vec2(a.cos(), a.sin());
-                p.add(Shape::line_segment([c + d * 6.0, c + d * 8.5], st));
-            }
         }
     }
 }

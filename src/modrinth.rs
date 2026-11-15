@@ -18,8 +18,6 @@ pub struct Hit {
     pub slug: String,
     pub title: String,
     #[serde(default)]
-    pub description: String,
-    #[serde(default)]
     pub author: String,
     #[serde(default)]
     pub downloads: u64,
@@ -110,4 +108,17 @@ pub fn identify(jar: &std::path::Path) -> Option<ProjectInfo> {
     let sha1 = net::sha1_hex(&bytes);
     let vf: VersionFile = net::get_json(&format!("{API}/version_file/{sha1}?algorithm=sha1")).ok()?;
     net::get_json(&format!("{API}/project/{}", net::urlencode(&vf.project_id))).ok()
+}
+
+fn norm(s: &str) -> String {
+    s.to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+}
+
+/// Retrouve un projet Modrinth par le nom et l'id lus dans un .jar (fichier venu d'ailleurs).
+pub fn find_by_name(name: &str, mod_id: &str) -> Option<ProjectInfo> {
+    let (n, id) = (norm(name), norm(mod_id));
+    let hits = search(name, 0).ok()?.hits;
+    hits.into_iter()
+        .find(|h| norm(&h.title) == n || norm(&h.slug) == id || norm(&h.slug) == n)
+        .map(|h| ProjectInfo { slug: h.slug, title: h.title })
 }

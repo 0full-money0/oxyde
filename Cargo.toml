@@ -1,6 +1,6 @@
 [package]
 name = "oxyde"
-version = "2.0.1"
+version = "3.0.0"
 edition = "2021"
 description = "Magasin de mods, convertisseur de mods Java et lanceur pour Horizon (Minecraft Rust Edition)."
 license = "MIT"

@@ -1,18 +1,16 @@
 //! Composants visuels réutilisables : couleurs, cartes, titres, boutons.
 
-use crate::fx;
+use crate::{fx, theme};
 use eframe::egui::{self, Color32, RichText};
 use std::path::Path;
 
-pub const GREEN: Color32 = Color32::from_rgb(80, 200, 120);
-pub const RED: Color32 = Color32::from_rgb(235, 90, 90);
-pub const ORANGE: Color32 = Color32::from_rgb(240, 170, 60);
-pub const RUST: Color32 = Color32::from_rgb(222, 110, 40);
-pub const BG: Color32 = Color32::from_rgb(17, 18, 21);
-pub const PANEL: Color32 = Color32::from_rgb(24, 25, 29);
-pub const CARD: Color32 = Color32::from_rgba_premultiplied(27, 28, 33, 232);
-pub const BORDER: Color32 = Color32::from_rgb(44, 46, 53);
-pub const MUTED: Color32 = Color32::from_rgb(150, 154, 165);
+pub const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
+pub const RED: Color32 = Color32::from_rgb(248, 113, 113);
+pub const ORANGE: Color32 = Color32::from_rgb(251, 191, 36);
+pub const RUST: Color32 = Color32::from_rgb(255, 106, 43);
+pub const CARD: Color32 = Color32::from_rgba_premultiplied(17, 17, 23, 242);
+pub const BORDER: Color32 = theme::LINE;
+pub const MUTED: Color32 = theme::SUBTLE;
 
 pub fn self_screenshot(ctx: &egui::Context, elapsed: f32) {
     record(ctx, elapsed);
@@ -78,12 +76,6 @@ fn record(ctx: &egui::Context, elapsed: f32) {
     }
 }
 
-/// Défilement automatique pendant un enregistrement (OXYDE_REC_SCROLL = pixels par seconde).
-pub fn rec_scroll(elapsed: f32) -> Option<f32> {
-    let speed: f32 = std::env::var("OXYDE_REC_SCROLL").ok()?.parse().ok()?;
-    let from: f32 = std::env::var("OXYDE_REC_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
-    Some(((elapsed - from).max(0.0)) * speed)
-}
 
 pub fn load_logo(ctx: &egui::Context) -> egui::TextureHandle {
     let img = image::load_from_memory(include_bytes!("../assets/icon.png")).map(|i| i.to_rgba8()).unwrap_or_default();
@@ -95,75 +87,16 @@ pub fn load_logo(ctx: &egui::Context) -> egui::TextureHandle {
 // Composants
 // ---------------------------------------------------------------------------
 
-/// Carte d'un projet ; renvoie true si on clique sur Installer.
-#[allow(clippy::too_many_arguments)]
-pub fn card(ui: &mut egui::Ui, icon: Option<&str>, title: &str, desc: &str, meta: &str, badge: &str, installed: bool, busy: bool, installable: bool) -> bool {
-    let mut clicked = false;
-    let resp = egui::Frame::NONE
-        .fill(CARD)
-        .stroke(egui::Stroke::new(1.0_f32, BORDER))
-        .corner_radius(14.0)
-        .inner_margin(14.0)
-        .shadow(egui::Shadow { offset: [0, 6], blur: 22, spread: 0, color: Color32::from_black_alpha(120) })
-        .outer_margin(egui::Margin { bottom: 10, ..Default::default() })
-        .show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            let size = egui::vec2(60.0, 60.0);
-            match icon {
-                Some(u) if u.starts_with("https://") => {
-                    ui.add(egui::Image::new(u).fit_to_exact_size(size).corner_radius(8.0));
-                }
-                _ => {
-                    let (r, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                    ui.painter().rect_filled(r, 8.0, Color32::from_rgb(60, 45, 35));
-                    let letter = title.chars().next().unwrap_or('?').to_uppercase().to_string();
-                    ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, letter, egui::FontId::proportional(26.0), RUST);
-                }
-            }
-            ui.vertical(|ui| {
-                ui.set_width((ui.available_width() - 150.0).max(120.0));
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(title).size(17.0).strong());
-                    egui::Frame::NONE.fill(Color32::from_rgb(52, 36, 28)).corner_radius(6.0).inner_margin(egui::Margin::symmetric(7, 2)).show(ui, |ui| {
-                        ui.label(RichText::new(badge).small().color(Color32::from_rgb(245, 175, 125)));
-                    });
-                });
-                let d: String = desc.chars().take(160).collect();
-                ui.label(RichText::new(d).color(Color32::from_rgb(195, 198, 206)));
-                ui.label(RichText::new(meta).small().color(MUTED));
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if installed {
-                    ui.label(RichText::new("✔ Installé").color(GREEN));
-                } else if busy {
-                    ui.spinner();
-                } else if installable {
-                    if ui.add(egui::Button::new(RichText::new("Installer").strong().color(Color32::WHITE)).fill(RUST).min_size(egui::vec2(110.0, 36.0))).clicked() {
-                        clicked = true;
-                    }
-                } else {
-                    ui.label(RichText::new(if badge == "Modpack" { "Via le launcher Horizon" } else { "Rien à convertir" }).small().color(MUTED));
-                }
-            });
-        });
-    });
-    let mut r = resp.response.rect;
-    r.max.y -= 10.0;
-    top_light(ui, r);
-    fx::hover_outline(ui, r, 14.0);
-    clicked
-}
 
 pub fn stat(ui: &mut egui::Ui, icon: fx::Icon, big: &str, small: &str) {
     surface(ui, 16, |ui| {
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(egui::vec2(46.0, 46.0), egui::Sense::hover());
-            fx::rounded_gradient(ui.painter(), r, 12.0, Color32::from_rgb(232, 124, 52), Color32::from_rgb(150, 55, 20));
+            fx::rounded_gradient(ui.painter(), r, 12.0, theme::ACCENT_A, theme::ACCENT_B);
             fx::icon(ui.painter(), icon, r.center(), Color32::WHITE);
             ui.add_space(6.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new(big).size(26.0).strong().color(Color32::WHITE));
+                ui.label(theme::heading(big, 24.0));
                 ui.label(RichText::new(small).color(MUTED));
             });
         });
@@ -176,11 +109,10 @@ pub fn top_light(ui: &egui::Ui, r: egui::Rect) {
     ui.painter().line_segment([egui::pos2(r.left() + 14.0, y), egui::pos2(r.right() - 14.0, y)], egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 22)));
 }
 
-/// Petit titre de section en capitales espacées.
+/// Petit titre de section.
 pub fn section(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(6.0);
-    let spaced: String = text.to_uppercase().chars().flat_map(|c| [c, ' ']).collect();
-    ui.label(RichText::new(spaced.trim_end()).size(12.0).strong().color(Color32::from_rgb(200, 140, 100)));
+    ui.add_space(8.0);
+    ui.label(theme::label_caps(text));
     ui.add_space(2.0);
 }
 
@@ -189,9 +121,9 @@ pub fn surface(ui: &mut egui::Ui, pad: i8, add: impl FnOnce(&mut egui::Ui)) {
     let resp = egui::Frame::NONE
         .fill(CARD)
         .stroke(egui::Stroke::new(1.0_f32, BORDER))
-        .corner_radius(14.0)
+        .corner_radius(16.0)
         .inner_margin(pad)
-        .shadow(egui::Shadow { offset: [0, 6], blur: 22, spread: 0, color: Color32::from_black_alpha(120) })
+        .shadow(egui::Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(90) })
         .outer_margin(egui::Margin { bottom: 10, ..Default::default() })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -204,25 +136,12 @@ pub fn surface(ui: &mut egui::Ui, pad: i8, add: impl FnOnce(&mut egui::Ui)) {
 }
 
 pub fn title(ui: &mut egui::Ui, t: &str, sub: &str) {
-    let r = ui.label(RichText::new(t).size(30.0).strong().color(Color32::WHITE)).rect;
-    let bar = egui::Rect::from_min_size(egui::pos2(r.left(), r.bottom() + 3.0), egui::vec2(42.0, 3.0));
-    fx::rounded_gradient(ui.painter(), bar, 1.5, RUST, Color32::from_rgb(255, 180, 90));
-    ui.add_space(8.0);
-    ui.label(RichText::new(sub).size(15.0).color(MUTED));
-    ui.add_space(14.0);
+    ui.label(theme::heading(t, 30.0));
+    ui.add_space(-4.0);
+    ui.label(RichText::new(sub).size(14.5).color(MUTED));
+    ui.add_space(12.0);
 }
 
-/// Bouton de sélection de source.
-pub fn segment(ui: &mut egui::Ui, selected: bool, label: &str) -> bool {
-    let b = egui::Button::new(RichText::new(label).size(15.0).color(if selected { Color32::WHITE } else { MUTED }))
-        .fill(if selected { Color32::from_rgb(52, 36, 28) } else { CARD })
-        .stroke(egui::Stroke::new(1.0_f32, if selected { RUST } else { BORDER }))
-        .corner_radius(18.0)
-        .min_size(egui::vec2(0.0, 34.0));
-    let r = ui.add(b);
-    crate::tour::mark(ui, &format!("seg:{label}"), r.rect);
-    r.clicked()
-}
 
 pub fn fmt_num(n: u64) -> String {
     match n {
@@ -270,4 +189,95 @@ pub fn pretty_path(p: &Path) -> String {
         }
     }
     s
+}
+
+/// État du bouton d'une ligne de mod.
+pub enum RowAction<'a> {
+    Install,
+    Busy,
+    Done,
+    Info(&'a str),
+}
+
+/// Ligne compacte d'un mod (colonnes du menu Mods). Renvoie true si on clique sur Installer.
+/// Le bouton est placé en premier (à droite) : il reste toujours visible, les textes se tronquent.
+pub fn row(ui: &mut egui::Ui, icon: Option<&str>, title: &str, sub: &str, badge: &str, action: RowAction) -> bool {
+    let mut clicked = false;
+    let resp = egui::Frame::NONE
+        .fill(theme::SURFACE)
+        .stroke(egui::Stroke::new(1.0_f32, BORDER))
+        .corner_radius(12.0)
+        .inner_margin(egui::Margin::symmetric(10, 9))
+        .outer_margin(egui::Margin { bottom: 6, ..Default::default() })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 42.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                match action {
+                    RowAction::Install => {
+                        let b = theme::primary(ui, "Installer", egui::vec2(0.0, 32.0));
+                        crate::tour::mark(ui, &format!("row:{title}"), b.rect);
+                        clicked = b.clicked();
+                    }
+                    RowAction::Busy => {
+                        ui.spinner();
+                    }
+                    RowAction::Done => {
+                        ui.label(RichText::new("✔").size(18.0).color(GREEN)).on_hover_text("Dans Horizon");
+                    }
+                    RowAction::Info(t) => {
+                        ui.label(RichText::new(t).small().color(MUTED));
+                    }
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let size = egui::vec2(40.0, 40.0);
+                    match icon {
+                        Some(u) if u.starts_with("https://") => {
+                            ui.add(egui::Image::new(u).fit_to_exact_size(size).corner_radius(9.0));
+                        }
+                        _ => {
+                            let (r, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                            fx::rounded_gradient(ui.painter(), r, 9.0, Color32::from_rgb(60, 40, 44), Color32::from_rgb(30, 26, 34));
+                            let letter = title.chars().next().unwrap_or('?').to_uppercase().to_string();
+                            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, letter, egui::FontId::proportional(19.0), Color32::from_rgb(255, 190, 140));
+                        }
+                    }
+                    ui.vertical(|ui| {
+                        ui.add(egui::Label::new(RichText::new(title).family(theme::semi()).color(Color32::WHITE)).truncate());
+                        ui.horizontal(|ui| {
+                            if !badge.is_empty() {
+                                chip(ui, badge);
+                            }
+                            ui.add(egui::Label::new(RichText::new(sub).small().color(MUTED)).truncate());
+                        });
+                    });
+                });
+            });
+        });
+    let mut r = resp.response.rect;
+    r.max.y -= 6.0;
+    fx::hover_outline(ui, r, 12.0);
+    clicked
+}
+
+/// Petite étiquette colorée.
+pub fn chip(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::NONE.fill(Color32::from_rgb(40, 26, 26)).corner_radius(6.0).inner_margin(egui::Margin::symmetric(7, 2)).show(ui, |ui| {
+        ui.label(RichText::new(text).size(11.0).family(theme::semi()).color(Color32::from_rgb(255, 150, 110)));
+    });
+}
+
+/// Colonne du menu Mods : panneau arrondi qui prend toute la hauteur.
+pub fn pane(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    let h = ui.available_height();
+    egui::Frame::NONE
+        .fill(Color32::from_rgba_premultiplied(13, 13, 18, 245))
+        .stroke(egui::Stroke::new(1.0_f32, BORDER))
+        .corner_radius(16.0)
+        .inner_margin(14.0)
+        .shadow(egui::Shadow { offset: [0, 8], blur: 26, spread: 0, color: Color32::from_black_alpha(120) })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_min_height((h - 30.0).max(0.0));
+            add(ui)
+        });
 }

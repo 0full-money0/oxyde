@@ -8,14 +8,13 @@ pub const SCRIPT: &[(f32, &str, bool)] = &[
     (0.0, "", false),
     (1.4, "hero_play", false),
     (3.0, "feat:fps_overlay", true),
-    (5.2, "nav:store", true),
-    (9.0, "seg:Modrinth (mods Java)", true),
-    (13.2, "nav:import", true),
-    (16.6, "nav:packs", true),
-    (18.2, "pack_play", true),
-    (21.0, "nav:library", true),
-    (24.0, "nav:home", true),
-    (26.5, "", false),
+    (5.2, "nav:mods", true),
+    (8.0, "seg:Modrinth", true),
+    (12.0, "seg:Catalogue officiel", true),
+    (15.6, "nav:packs", true),
+    (17.4, "pack_play", true),
+    (22.6, "nav:home", true),
+    (25.0, "", false),
 ];
 
 pub fn mark(ui: &egui::Ui, key: &str, rect: Rect) {

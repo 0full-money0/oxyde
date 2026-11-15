@@ -18,27 +18,33 @@
 
 ## Features
 
-- **Play**: one button starts Horizon, or any ported modpack, through the official Horizon launcher.
-- **Store**: the 160+ projects of Horizon's official registry (content mods, native Rust mods, resource packs,
-  shaders, modpacks) and every Java mod on Modrinth, installed in one click.
-- **Drop a Java mod**: drop `.jar` files (or a whole `mods` folder) anywhere in the window. Oxyde recognises each
-  mod and runs it through the best available path (below). No manual conversion step.
-- **Modpacks in one click**: a friend sends you a modpack (`.oxypack`, `.mrpack` or a CurseForge `.zip`), you
-  drop it in Oxyde, and everything is downloaded, ported, installed and turned on. Then click **Play**.
-- **Share your modpack**: Oxyde builds a small `.oxypack` that lists your mods. Only mods that cannot be
-  downloaded from Horizon's registry or Modrinth are embedded in the file.
+- **Play**: one click starts Horizon with the selected profile, with a launch screen that shows each step.
+- **Profiles**, like the Modrinth App: switch profile from the top bar, create new ones, each with its own mods.
+  Ported modpacks show up as profiles too.
+- **Mods, in two columns**:
+  - on the left, **Java mods**: Modrinth, CurseForge (beta, needs your free CurseForge API key) and **My files**
+    (any `.jar` you drop in the window);
+  - on the right, **Horizon**: the mods of the selected profile, and Horizon's official catalogue (160+ projects).
+  - **Install** moves a mod from left to right: Oxyde finds the best Horizon version of it (below) and installs it.
+- **Modpacks in one click**: a friend sends you a modpack (`.oxypack`, `.mrpack` or a CurseForge `.zip`), you drop
+  it in Oxyde, and everything is downloaded, ported and installed. Build your own `.oxypack` to share.
 - **Live activity**: every install shows its progress and a detailed report (what was ported, what was left out).
-- **My mods**: turn mods on and off, remove them, see where each one comes from.
-- **Custom window**: its own title bar, animated start-up screen and background. No default Windows chrome.
+- **Installer**: on first start Oxyde offers to install itself (no admin rights, Start menu and desktop shortcuts),
+  and can uninstall itself from Settings.
+- **Its own look**: custom window and title bar, Inter typeface, animated start-up and background.
 - **Auto-update**: Oxyde updates itself from this repository's releases, after checking the SHA-256.
 
-| Store | Modpacks |
+| Mods (Java on the left, Horizon on the right) | Horizon catalogue |
 |---|---|
-| ![Store](docs/screenshots/store.png) | ![Modpacks](docs/screenshots/modpacks.png) |
+| ![Mods](docs/screenshots/mods.png) | ![Catalogue](docs/screenshots/catalog.png) |
 
-| Import and activity | My mods |
+| Modpacks | Launch |
 |---|---|
-| ![Import](docs/screenshots/import.png) | ![My mods](docs/screenshots/mods.png) |
+| ![Modpacks](docs/screenshots/modpacks.png) | ![Launch](docs/screenshots/launch.png) |
+
+| Installer | Start-up |
+|---|---|
+| ![Installer](docs/screenshots/setup.png) | ![Splash](docs/screenshots/splash.png) |
 
 ## How a Java mod gets into Horizon
 
@@ -50,12 +56,16 @@ this order:
    Minimap…). Complete, code included. Installed from Horizon's registry.
 2. **Official Horizon port.** When the Horizon launcher is installed, Oxyde hands the mod to Horizon's own porting
    pipeline (`horizon-launcher mods install`): blocks copy the closest vanilla block, recipes and loot tables are
-   upgraded to 26.3, and you get an exact report. Works for mods that have a 26.3 version.
+   upgraded to 26.3, dependencies are installed too, and you get an exact report. Works for mods that have a 26.3
+   version. A `.jar` from anywhere (CurseForge, an older version…) is matched by its fingerprint, or else by the
+   name written inside it, so it can use this path too.
 3. **Oxyde converter, as a last resort.** For older mods, Oxyde converts the content itself (textures, models,
    recipes, tags, loot, structures, blocks and items from a vanilla template). Marked "approximate".
 
 Mods that are only code (Sodium, Fabric API, Iris…) are reported as such: there is nothing in them to port.
-Tech mods keep their content (blocks, items, recipes) but not their machines or custom screens.
+Tech mods keep their content (blocks, items, recipes) but not their machines or custom screens. Example: Sophisticated
+Backpacks ports its 73 items, 6 blocks and textures, but its backpacks cannot be opened, because the backpack screen
+and storage are Java code.
 
 **Later: the Java bridge.** The Horizon team plans an optional Java bridge that will run unchanged Fabric 26.3
 jars ([plan](https://github.com/horizon-rust/horizon/issues/13914)). It is not released yet.
@@ -92,8 +102,8 @@ Embedded files are checked against their SHA-256 before they are installed.
 3. **Store** → **Install**, or drop your `.jar` files / a modpack in the window.
 4. Click **Play**.
 
-Oxyde finds Horizon by itself: the launcher in `%LOCALAPPDATA%\Programs\Horizon Launcher`, and the game folder of
-its main instance (usually `%APPDATA%\horizon`). Both can be changed in **Settings**.
+Oxyde finds Horizon by itself: the launcher in `%LOCALAPPDATA%\Programs\Horizon Launcher`, and its profiles
+(the main one is usually `%APPDATA%\horizon`). Oxyde installs itself in `%LOCALAPPDATA%\Programs\Oxyde`.
 
 ## Security
 
@@ -102,8 +112,9 @@ its main instance (usually `%APPDATA%\horizon`). Both can be changed in **Settin
 - Each release publishes the **SHA-256** of the exe and a GitHub **build provenance attestation**:
   `gh attestation verify Oxyde.exe --repo 0full-money0/oxyde`
 - No exe packer, no installer, no admin rights, no telemetry.
-- Downloads only come from Horizon's registry, Modrinth's CDN and this repository's releases, and are checked
-  by hash. Porting is done by Horizon's own signed launcher.
+- Downloads only come from Horizon's registry, Modrinth's CDN, CurseForge's CDN (with your key) and this
+  repository's releases, and are checked by hash where the source publishes one. Porting is done by Horizon's own
+  launcher.
 
 Windows SmartScreen may warn about a new unsigned exe: **More info → Run anyway**.
 
@@ -144,6 +155,9 @@ cargo build --release
 ## Credits and license
 
 Made by **full_money**. Released under the [MIT License](LICENSE).
+
+The Inter typeface (`assets/fonts`) is © The Inter Project Authors, under the SIL Open Font License 1.1
+([license](assets/fonts/Inter-LICENSE.txt)).
 
 Unofficial project, not affiliated with Mojang, Microsoft or the Horizon team. Ported and converted mods remain
 under their authors' licenses: check them before sharing a modpack with embedded files.

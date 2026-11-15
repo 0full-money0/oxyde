@@ -55,6 +55,8 @@ pub struct Ctx {
     pub index: Option<Arc<registry::Index>>,
     pub launcher: Option<PathBuf>,
     pub game_dir: PathBuf,
+    /// Profil du launcher Horizon où installer (None = profil principal).
+    pub instance: Option<String>,
     pub out_dir: PathBuf,
     pub opts: Options,
 }
@@ -77,13 +79,21 @@ pub fn install(t: &Target, ctx: &Ctx, log: &mut dyn FnMut(&str)) -> Result<Outco
         Target::Modrinth { slug, title } => java(slug, title, None, ctx, log),
         Target::Jar(path) => {
             log("Identification du mod…");
-            match modrinth::identify(path) {
+            // 1. par empreinte (le fichier exact vient de Modrinth)
+            // 2. sinon par le nom écrit dans le .jar (fichier CurseForge, autre version…)
+            let found = modrinth::identify(path).or_else(|| {
+                let (files, _) = convert::read_zip(path).ok()?;
+                let meta = convert::read_meta(&files, path);
+                log(&format!("Empreinte inconnue, recherche de « {} »…", meta.name));
+                modrinth::find_by_name(&meta.name, &meta.id)
+            });
+            match found {
                 Some(info) => {
                     log(&format!("Reconnu : {} (Modrinth)", info.title));
                     java(&info.slug, &info.title, Some(path), ctx, log)
                 }
                 None => {
-                    log("Mod inconnu de Modrinth : conversion par Oxyde.");
+                    log("Mod introuvable en ligne : conversion par Oxyde.");
                     oxyde(path, None, ctx, log)
                 }
             }
@@ -115,7 +125,7 @@ fn java(slug: &str, title: &str, local: Option<&Path>, ctx: &Ctx, log: &mut dyn 
         match engine.check(slug) {
             Ok(c) if c.portable() => {
                 log(&format!("Horizon peut le porter : {}", c.summary));
-                let out = engine.install(slug, None, &mut |l| log(l))?;
+                let out = engine.install(slug, ctx.instance.as_deref(), &mut |l| log(l))?;
                 let mut details: Vec<String> = c.ports.iter().map(|p| format!("✔ {p}")).collect();
                 details.extend(c.skipped.iter().map(|s| format!("✖ {s}")));
                 let first = out.lines().next().unwrap_or("").split(" (SHA").next().unwrap_or("").to_string();

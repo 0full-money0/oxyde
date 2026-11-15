@@ -48,6 +48,8 @@ pub struct InstalledEntry {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct Instance {
+    pub id: String,
+    pub name: String,
     #[serde(default)]
     pub kind: String,
     pub home: PathBuf,
@@ -188,6 +190,12 @@ impl Engine {
     pub fn install_horizon_pack(&self, id: &str, line: &mut dyn FnMut(&str)) -> Result<String, String> {
         let out = self.run(&["mods", "install", id, "--source", "horizon"], Duration::from_secs(1800), line)?;
         Ok(out.lines().next().unwrap_or("installé").to_string())
+    }
+
+    /// Nouveau profil Horizon vide (ses propres mods et réglages).
+    pub fn create_instance(&self, name: &str) -> Result<Instance, String> {
+        let out = self.quiet(&["instance", "create", name, "--json"], Duration::from_secs(60))?;
+        serde_json::from_str(out.trim()).map_err(|e| format!("réponse du launcher illisible : {e}"))
     }
 
     pub fn remove(&self, slug: &str) -> Result<String, String> {

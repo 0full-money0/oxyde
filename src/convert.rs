@@ -440,7 +440,19 @@ pub fn convert_jar(jar: &Path, out_dir: &Path, opts: &Options) -> Result<Report,
         }
     }
     meta.id = id.clone();
-    let namespaces: Vec<String> = ns_count.keys().filter(|n| **n != id).cloned().collect();
+    // Un namespace étranger sans assets (data/curios, data/carryon…) est une compatibilité avec un autre mod :
+    // le revendiquer bloquerait ce mod-là dans Horizon. On ne le garde que s'il a ses propres assets.
+    let has_assets = |ns: &str| kept.keys().any(|k| k.starts_with(&format!("assets/{ns}/")));
+    let foreign: Vec<String> = ns_count.keys().filter(|n| **n != id && !has_assets(n)).cloned().collect();
+    for ns in &foreign {
+        let prefix = format!("data/{ns}/");
+        let gone: Vec<String> = kept.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+        for k in gone {
+            kept.remove(&k);
+            dropped.push((k, format!("compatibilité avec le mod « {ns} » (pas ce mod)")));
+        }
+    }
+    let namespaces: Vec<String> = ns_count.keys().filter(|n| **n != id && !foreign.contains(n)).cloned().collect();
 
     // 3. Déclarations de blocs et objets (Horizon ne peut pas lire le code Java qui les enregistre)
     let mut blocks = 0;
@@ -633,9 +645,9 @@ pub(crate) mod tests {
         assert_eq!(r.meta.authors, vec!["Bob", "Ann"]);
         assert_eq!(r.blocks, 1);
         assert_eq!(r.items, 1);
-        assert_eq!(r.namespaces, vec!["other_ns"]);
+        assert!(r.namespaces.is_empty(), "un namespace étranger sans assets n'est pas revendiqué");
         assert!(r.has_code);
-        assert_eq!(r.dropped.len(), 3);
+        assert_eq!(r.dropped.len(), 4);
 
         let (out, _) = read_zip(&r.output).unwrap();
         assert!(out.contains_key("data/ruby/recipe/ruby_block.json"));

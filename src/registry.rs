@@ -24,13 +24,8 @@ pub struct Project {
     pub name: String,
     #[serde(default)]
     pub summary: String,
-    #[serde(default)]
-    pub authors: Vec<String>,
-    #[serde(default)]
-    pub license: String,
     pub icon: Option<String>,
     pub downloads: Option<u64>,
-    pub updated: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     pub versions: Vec<Version>,
@@ -39,7 +34,6 @@ pub struct Project {
 #[derive(Deserialize, Clone, Debug)]
 pub struct Version {
     pub version: String,
-    pub game: Option<String>,
     pub file: FileRef,
 }
 
