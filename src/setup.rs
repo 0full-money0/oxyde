@@ -4,7 +4,15 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Racine de test : tout (dossier, raccourcis) va dedans au lieu du vrai PC.
+fn test_root() -> Option<PathBuf> {
+    std::env::var_os("OXYDE_INSTALL_ROOT").map(PathBuf::from)
+}
+
 pub fn install_dir() -> PathBuf {
+    if let Some(r) = test_root() {
+        return r.join("Programs").join("Oxyde");
+    }
     dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("Programs").join("Oxyde")
 }
 
@@ -13,10 +21,16 @@ fn installed_exe() -> PathBuf {
 }
 
 fn start_menu_link() -> Option<PathBuf> {
+    if let Some(r) = test_root() {
+        return Some(r.join("StartMenu").join("Oxyde.lnk"));
+    }
     Some(dirs::data_dir()?.join("Microsoft").join("Windows").join("Start Menu").join("Programs").join("Oxyde.lnk"))
 }
 
 fn desktop_link() -> Option<PathBuf> {
+    if let Some(r) = test_root() {
+        return Some(r.join("Desktop").join("Oxyde.lnk"));
+    }
     Some(dirs::desktop_dir()?.join("Oxyde.lnk"))
 }
 
@@ -68,6 +82,11 @@ fn shortcut(link: &std::path::Path, target: &std::path::Path) -> Result<(), Stri
 /// Copie l'exe et crée les raccourcis. Renvoie le chemin de la copie installée.
 pub fn install(desktop: bool) -> Result<PathBuf, String> {
     let dir = install_dir();
+    for l in [start_menu_link(), desktop_link()].into_iter().flatten() {
+        if let Some(parent) = l.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
     std::fs::create_dir_all(&dir).map_err(|e| format!("dossier d'installation : {e}"))?;
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let dest = installed_exe();
@@ -92,14 +111,19 @@ pub fn uninstall() -> Result<(), String> {
     for l in [start_menu_link(), desktop_link()].into_iter().flatten() {
         let _ = std::fs::remove_file(l);
     }
-    let dir = install_dir();
-    let mut c = Command::new("cmd");
-    c.args(["/C", &format!("timeout /t 2 /nobreak >nul & rmdir /s /q \"{}\"", dir.display())]);
+    // chemin Windows propre, et une pause qui ne dépend pas du PATH (ping existe sur tous les Windows)
+    let dir = install_dir().display().to_string().replace('/', "\\");
+    let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let mut c = Command::new(format!(r"{windir}\System32\cmd.exe"));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        // la ligne est passée telle quelle : cmd ne comprend pas les guillemets échappés par Rust
+        c.raw_arg(format!(r#"/C ""{windir}\System32\PING.EXE" -n 3 127.0.0.1 >nul & rmdir /s /q "{dir}"""#));
         c.creation_flags(0x0800_0000);
     }
+    #[cfg(not(windows))]
+    c.args(["-c", &format!("sleep 2; rm -rf '{dir}'")]);
     c.spawn().map_err(|e| e.to_string())?;
     Ok(())
 }

@@ -108,6 +108,50 @@ fn cli(args: &[String]) -> Option<i32> {
             }
             Some(if r.is_ok() { 0 } else { 1 })
         }
+        Some("--profiles") => {
+            let Some(e) = engine::Engine::find() else {
+                println!("ERR launcher Horizon introuvable");
+                return Some(1);
+            };
+            for i in e.instances().unwrap_or_default() {
+                println!("{}\t{}\t{}\t{}", i.id, i.kind, i.name, i.home.display());
+            }
+            Some(0)
+        }
+        Some("--new-profile") if args.len() == 3 => {
+            let r = engine::Engine::find().ok_or("launcher Horizon introuvable".to_string()).and_then(|e| e.create_instance(&args[2]));
+            match r {
+                Ok(i) => {
+                    println!("OK  {} ({}) {}", i.name, i.id, i.home.display());
+                    Some(0)
+                }
+                Err(e) => {
+                    println!("ERR {e}");
+                    Some(1)
+                }
+            }
+        }
+        // installe Oxyde (OXYDE_INSTALL_ROOT pour un dossier de test), puis --uninstall
+        Some("--setup") => match setup::install(true) {
+            Ok(p) => {
+                println!("OK  {}", p.display());
+                Some(0)
+            }
+            Err(e) => {
+                println!("ERR {e}");
+                Some(1)
+            }
+        },
+        Some("--uninstall") => match setup::uninstall() {
+            Ok(()) => {
+                println!("OK");
+                Some(0)
+            }
+            Err(e) => {
+                println!("ERR {e}");
+                Some(1)
+            }
+        },
         _ => None,
     }
 }
@@ -278,7 +322,7 @@ type PackParts = (Vec<pack::Entry>, Vec<(String, Vec<u8>)>);
 
 enum Msg {
     Registry(Result<registry::Index, String>),
-    Modrinth { offset: u64, result: Result<modrinth::SearchResp, String> },
+    Modrinth { gen: u64, offset: u64, result: Result<modrinth::SearchResp, String> },
     Launcher { instances: Option<Vec<engine::Instance>>, mods: Option<Vec<engine::InstalledEntry>>, packs: Option<Vec<engine::PortedPack>> },
     TaskDone,
     Launched(Result<(), String>),
@@ -324,6 +368,8 @@ struct App {
     mr_hits: Vec<modrinth::Hit>,
     mr_total: u64,
     mr_loading: bool,
+    /// Numéro de la dernière recherche : une réponse plus ancienne est ignorée.
+    mr_gen: u64,
     mr_err: Option<String>,
     // bibliothèque et modpacks
     library: Vec<game::InstalledMod>,
@@ -387,6 +433,7 @@ impl App {
             mr_hits: vec![],
             mr_total: 0,
             mr_loading: false,
+            mr_gen: 0,
             mr_err: None,
             library: vec![],
             confirm_remove: None,
@@ -431,6 +478,20 @@ impl App {
         app.scan_imports();
         if let Ok(f) = std::env::var("OXYDE_DEMO_TASK") {
             app.add_demo_task(&f);
+        }
+        // démonstrations pour les tests (version de développement seulement)
+        #[cfg(debug_assertions)]
+        {
+            if let Ok(slug) = std::env::var("OXYDE_DEMO_REFUSED") {
+                app.s.not_portable.insert(slug, format!("{}{}", installer::NOT_PORTABLE, installer::why_not("Can't be carried over: mod id")));
+            }
+            if std::env::var("OXYDE_DEMO_ACTIVITY").is_ok() {
+                app.activity_window = true;
+            }
+            if let Ok(q) = std::env::var("OXYDE_DEMO_QUERY") {
+                app.query = q;
+                app.search_modrinth(&cc.egui_ctx, 0);
+            }
         }
         app.refresh_library();
         app.load_registry(&cc.egui_ctx);
@@ -577,7 +638,9 @@ impl App {
         self.mr_loading = true;
         self.mr_err = None;
         let q = self.query.clone();
-        self.spawn(ctx, move || Msg::Modrinth { offset, result: modrinth::search(&q, offset) });
+        self.mr_gen += 1;
+        let gen = self.mr_gen;
+        self.spawn(ctx, move || Msg::Modrinth { gen, offset, result: modrinth::search(&q, offset) });
     }
 
     fn check_updates(&self, ctx: egui::Context) {
@@ -678,6 +741,13 @@ impl App {
                 jars.push(p);
             } else if is_ext(&p, "hmod") {
                 self.install_target(ctx, file_name(&p), String::new(), Target::Hmod(p));
+            } else if is_ext(&p, "zip") && pack::is_resource_pack(&p) {
+                let dir = self.game_dir().join("resourcepacks");
+                let dest = dir.join(file_name(&p));
+                self.toast = Some(match std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(&p, &dest)) {
+                    Ok(_) => (format!("Pack de ressources ajouté : {}. Active-le dans Options > Packs de ressources.", file_name(&p)), true),
+                    Err(e) => (format!("Pack de ressources : {e}"), false),
+                });
             } else if is_ext(&p, pack::PACK_EXT) || is_ext(&p, pack::LEGACY_EXT) || is_ext(&p, "mrpack") || is_ext(&p, "zip") {
                 self.install_pack(ctx, p);
             } else {
@@ -708,7 +778,8 @@ impl App {
                         self.registry_err = Some(e);
                     }
                 }
-                Msg::Modrinth { offset, result } => {
+                Msg::Modrinth { gen, .. } if gen != self.mr_gen => {}
+                Msg::Modrinth { offset, result, .. } => {
                     self.mr_loading = false;
                     match result {
                         Ok(r) => {
@@ -1369,7 +1440,7 @@ impl App {
                 } else if code_only || refused.is_some() {
                     ""
                 } else {
-                    "portable"
+                    "mod Java"
                 };
                 let sub = format!("{} · ⬇ {}", h.author, fmt_num(h.downloads));
                 let before = ui.cursor().min.y;

@@ -195,6 +195,14 @@ pub fn extract(pack: &Path, file: &str, sha256: &str) -> Result<PathBuf, String>
     Ok(out)
 }
 
+/// Un .zip qui a `pack.mcmeta` à la racine (et pas de manifeste de modpack) est un pack de ressources.
+pub fn is_resource_pack(path: &Path) -> bool {
+    let Ok(f) = std::fs::File::open(path) else { return false };
+    let Ok(z) = zip::ZipArchive::new(f) else { return false };
+    let has = |n: &str| z.file_names().any(|x| x == n);
+    has("pack.mcmeta") && !has("manifest.json") && !has("modrinth.index.json")
+}
+
 /// Copie des .hmod dans `horizon-mods/` et les active.
 pub fn install_mods(mods: &[PathBuf], game_dir: &Path) -> Result<Vec<String>, String> {
     let mods_dir = game_dir.join("horizon-mods");
@@ -214,6 +222,19 @@ pub fn install_mods(mods: &[PathBuf], game_dir: &Path) -> Result<Vec<String>, St
 mod tests {
     use super::*;
     use crate::convert::{convert_jar, tests::make_jar, Options};
+
+    #[test]
+    fn detects_resource_packs() {
+        let dir = std::env::temp_dir().join(format!("oxy-rp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rp = dir.join("faithful.zip");
+        make_jar(&rp, &[("pack.mcmeta", "{}"), ("assets/minecraft/textures/block/stone.png", "x")]);
+        let cf = dir.join("pack-curseforge.zip");
+        make_jar(&cf, &[("manifest.json", "{}"), ("overrides/options.txt", "x")]);
+        assert!(is_resource_pack(&rp));
+        assert!(!is_resource_pack(&cf));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn pack_roundtrip_v2() {
